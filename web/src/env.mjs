@@ -43,7 +43,10 @@ export const env = createEnv({
    * isn't built with invalid env vars.
    */
   server: {
-    DATABASE_URL: z.url(),
+    DATABASE_URL:
+      process.env.LANGFUSE_MODE === "lite"
+        ? z.string().min(1)
+        : z.url(),
     NODE_ENV: z.enum(["development", "test", "production"]),
     BUILD_ID: z.string().optional(),
     NEXTAUTH_SECRET:
@@ -314,12 +317,21 @@ export const env = createEnv({
         s ? s.split(",").map((h) => h.toLowerCase().trim()) : [],
       ),
 
-    // clickhouse
-    CLICKHOUSE_URL: z.url(),
+    // clickhouse (optional in lite mode — uses SQLite instead)
+    CLICKHOUSE_URL:
+      process.env.LANGFUSE_MODE === "lite"
+        ? z.url().optional()
+        : z.url(),
     CLICKHOUSE_CLUSTER_NAME: z.string().default("default"),
     CLICKHOUSE_DB: z.string().default("default"),
-    CLICKHOUSE_USER: z.string(),
-    CLICKHOUSE_PASSWORD: z.string(),
+    CLICKHOUSE_USER:
+      process.env.LANGFUSE_MODE === "lite"
+        ? z.string().optional()
+        : z.string(),
+    CLICKHOUSE_PASSWORD:
+      process.env.LANGFUSE_MODE === "lite"
+        ? z.string().optional()
+        : z.string(),
     CLICKHOUSE_CLUSTER_ENABLED: z.enum(["true", "false"]).default("true"),
 
     // EE ui customization

@@ -6,6 +6,7 @@ import {
   PreferredClickhouseService,
   EXCEPTION_TAG_HEADER_NAME,
 } from "../clickhouse/client";
+import { isLiteMode } from "../adapters";
 import { ClickhouseExecExceptionTagTransform } from "./clickhouseExecExceptionTag";
 import { logger } from "../logger";
 import { getTracer, instrumentAsync } from "../instrumentation";
@@ -151,6 +152,13 @@ export async function upsertClickhouse<
   eventBodyMapper: (body: T) => Record<string, unknown>;
   tags?: ClickHouseQueryTags;
 }): Promise<void> {
+  // Lite mode: write to SQLite instead of ClickHouse
+  if (isLiteMode()) {
+    if (opts.table === "traces_null") return;
+    const { liteUpsert } = await import("./lite-upsert.js");
+    await liteUpsert(opts as { table: "scores" | "traces" | "observations"; records: Record<string, unknown>[]; eventBodyMapper: (body: Record<string, unknown>) => Record<string, unknown> });
+    return;
+  }
   return await instrumentAsync(
     { name: "clickhouse-upsert", spanKind: SpanKind.CLIENT },
     async (span) => {
@@ -257,6 +265,8 @@ export async function upsertClickhouse<
 export async function* queryClickhouseStream<T>(
   opts: ClickhouseQueryOpts,
 ): AsyncGenerator<T> {
+  // Lite mode: no ClickHouse available, yield nothing
+  if (isLiteMode()) return;
   if (!opts.allowLegacyEventsRead) assertNoLegacyEventsRead(opts.query);
   const normalizedTags = normalizeClickHouseQueryTags(opts.tags);
   const tracer = getTracer("clickhouse-query-stream");
@@ -328,6 +338,8 @@ export async function* queryClickhouseStream<T>(
 export async function* queryClickhouseStreamRawText(
   opts: ClickhouseQueryOpts,
 ): AsyncGenerator<string> {
+  // Lite mode: no ClickHouse available, yield nothing
+  if (isLiteMode()) return;
   if (!opts.allowLegacyEventsRead) assertNoLegacyEventsRead(opts.query);
   const normalizedTags = normalizeClickHouseQueryTags(opts.tags);
   const tracer = getTracer("clickhouse-query-stream-raw-text");
@@ -413,6 +425,11 @@ export type ClickhouseExecRawResult = {
 export async function queryClickhouseExecRaw(
   opts: ClickhouseQueryOpts & { format: string },
 ): Promise<ClickhouseExecRawResult> {
+  // Lite mode: return empty stream
+  if (isLiteMode()) {
+    const { Readable } = await import("stream");
+    return { queryId: "lite", stream: Readable.from([]), responseHeaders: {} };
+  }
   if (!opts.allowLegacyEventsRead) assertNoLegacyEventsRead(opts.query);
   const normalizedTags = normalizeClickHouseQueryTags(opts.tags);
   const tracer = getTracer("clickhouse-query-exec-raw");
@@ -657,6 +674,8 @@ function isRetryableError(error: unknown): boolean {
 export async function queryClickhouse<T>(
   opts: ClickhouseQueryOpts,
 ): Promise<T[]> {
+  // Lite mode: no ClickHouse available, return empty results
+  if (isLiteMode()) return [];
   if (!opts.allowLegacyEventsRead) assertNoLegacyEventsRead(opts.query);
   const normalizedTags = normalizeClickHouseQueryTags(opts.tags);
   return await instrumentAsync(
@@ -795,6 +814,8 @@ export async function commandClickhouse(opts: {
   abortSignal?: AbortSignal;
   session_id?: string;
 }): Promise<void> {
+  // Lite mode: no ClickHouse available, no-op
+  if (isLiteMode()) return;
   return await instrumentAsync(
     { name: "clickhouse-command", spanKind: SpanKind.CLIENT },
     async (span) => {

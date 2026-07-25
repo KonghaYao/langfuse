@@ -118,3 +118,4 @@ web/test-results/*
 
 # Superset config
 .superset/
+.langfuse/

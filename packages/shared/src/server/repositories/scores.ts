@@ -75,6 +75,8 @@ import {
   findUiColumnMapping,
   matchesUiColumnMapping,
 } from "../../tableDefinitions";
+import { isLiteMode } from "../adapters";
+import { liteGetScoresForTraces } from "./lite-queries";
 
 const FILTER_OPTION_SCORE_NAME_LIMIT = 200;
 const FILTER_OPTION_CATEGORICAL_VALUE_LIMIT = 20;
@@ -505,6 +507,21 @@ const getScoresForTracesInternal = async <
     includeHasMetadata = false,
     preferredClickhouseService,
   } = props;
+
+  if (isLiteMode()) {
+    const rows = await liteGetScoresForTraces(projectId, traceIds);
+    const includeMetadataPayload = !excludeMetadata;
+    return rows.map((row) => {
+      const score = convertClickhouseScoreToDomain(
+        { ...row, metadata: excludeMetadata ? {} : row.metadata },
+        includeMetadataPayload,
+      );
+      if (includeHasMetadata) {
+        Object.assign(score, { hasMetadata: Object.keys(row.metadata ?? {}).length > 0 });
+      }
+      return score;
+    });
+  }
 
   const select = formatMetadataSelect(excludeMetadata, includeHasMetadata);
   const levelFilter =

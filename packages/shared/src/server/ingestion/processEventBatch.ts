@@ -126,6 +126,15 @@ export const processEventBatch = async (
     error?: string;
   }[];
 }> => {
+  // Lite mode: bypass S3 + Redis, write directly to SQLite
+  if (process.env.LANGFUSE_MODE === "lite") {
+    const { processEventBatchLite } = await import("./processEventBatchLite.js");
+    return processEventBatchLite(input, authCheck, {
+      isLangfuseInternal: options.isLangfuseInternal,
+      attribution: options.attribution,
+    });
+  }
+
   if (input.length === 0) {
     return { successes: [], errors: [] };
   }

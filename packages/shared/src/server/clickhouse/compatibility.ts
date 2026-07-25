@@ -152,6 +152,8 @@ export const getClickHouseCompatibilitySettings = (): ClickHouseSettings =>
     .settings;
 
 export const initializeClickhouseCompatibility = async (): Promise<void> => {
+  // Lite mode: no ClickHouse available, skip compatibility detection
+  if (process.env.LANGFUSE_MODE === "lite") return;
   if (initializationPromise) return initializationPromise;
 
   initializationPromise = (async () => {

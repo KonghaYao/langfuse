@@ -34,6 +34,9 @@
     "dev:worker": "turbo run dev --filter=worker",
     "dev:web": "turbo run dev --filter=web",
     "dev:web-webpack": "turbo run dev --filter=web -- --webpack",
+    "dev:lite": "bash scripts/dev-lite.sh",
+    "db:generate:sqlite": "node packages/shared/prisma/scripts/generate-sqlite-schema.mjs && npx prisma generate --schema=packages/shared/prisma/schema.sqlite.prisma",
+    "db:push:sqlite": "npx prisma db push --schema=packages/shared/prisma/schema.sqlite.prisma",
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,css}\" --experimental-cli",
     "format:check": "prettier --check \"**/*.{js,jsx,ts,tsx,css}\" --experimental-cli",
@@ -103,5 +106,8 @@
       }
     }
   },
-  "packageManager": "pnpm@11.10.0"
+  "packageManager": "pnpm@11.10.0",
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
+  }
 }

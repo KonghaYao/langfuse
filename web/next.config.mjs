@@ -94,6 +94,10 @@ const nextConfig = {
     // which pulls ssh2 assets that Turbopack cannot place into ESM chunks.
     // Keep it external to the server bundle and load it only at runtime.
     "dockerode",
+    // Prisma Client uses #main-entry-point subpath imports that Turbopack
+    // cannot resolve. Keep external so Node.js loads it at runtime.
+    "@prisma/client",
+    ".prisma/client",
   ],
   poweredByHeader: false,
   basePath: env.NEXT_PUBLIC_BASE_PATH,

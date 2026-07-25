@@ -399,6 +399,8 @@ export const scanKeys = async (
 };
 
 const createRedisClient = () => {
+  // Lite mode: no Redis available
+  if (process.env.LANGFUSE_MODE === "lite") return null;
   try {
     return createNewRedisInstance({
       keyPrefix: env.REDIS_KEY_PREFIX ?? undefined,

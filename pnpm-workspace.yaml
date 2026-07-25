@@ -56,6 +56,7 @@ allowBuilds:
   "@scarf/scarf": false
   cpu-features: true
   ssh2: true
+  better-sqlite3: true
 overrides:
   postcss: 8.5.22
   esbuild: "0.28.1"

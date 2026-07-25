@@ -31,6 +31,12 @@ import { ClickHouseClientConfigOptions } from "@clickhouse/client";
 import { shouldSkipObservationsFinal } from "../queries/clickhouse-sql/query-options";
 import { convertDateToClickhouseDateTime } from "../clickhouse/client";
 import type { TraceDeleteBatchActionCursor } from "../../features/batchAction/types";
+import { isLiteMode } from "../adapters";
+import {
+  liteGetTracesTable,
+  liteGetTracesTableCount,
+  liteGetTracesTableMetrics,
+} from "../repositories/lite-queries";
 
 export type TracesTableReturnType = Pick<
   TraceRecordReadType,
@@ -536,6 +542,10 @@ export const getTracesTableCount = async (props: {
   limit?: number;
   page?: number;
 }) => {
+  if (isLiteMode()) {
+    return liteGetTracesTableCount(props.projectId, props.searchQuery);
+  }
+
   const countRows = await getTracesTableGeneric({
     select: "count",
     ...props,
@@ -557,6 +567,20 @@ export const getTracesTableMetrics = async (props: {
   page?: number;
   clickhouseConfigs?: ClickHouseClientConfigOptions | undefined;
 }): Promise<Array<Omit<TracesMetricsUiReturnType, "scores">>> => {
+  if (isLiteMode()) {
+    // In lite mode, get trace IDs first then compute metrics from SQLite
+    const traceRows = await liteGetTracesTable({
+      projectId: props.projectId,
+      limit: props.limit ?? 50,
+      page: props.page ?? 0,
+      searchQuery: props.searchQuery,
+      orderBy: props.orderBy as { column: string; order: "ASC" | "DESC" } | null,
+    });
+    const traceIds = traceRows.map((r) => r.id);
+    const metrics = await liteGetTracesTableMetrics(props.projectId, traceIds);
+    return metrics as Array<Omit<TracesMetricsUiReturnType, "scores">>;
+  }
+
   const countRows = await getTracesTableGeneric({
     select: "metrics",
     ...props,
@@ -575,6 +599,16 @@ export const getTracesTable = async (p: {
   page?: number;
   clickhouseConfigs?: ClickHouseClientConfigOptions | undefined;
 }) => {
+  if (isLiteMode()) {
+    return liteGetTracesTable({
+      projectId: p.projectId,
+      limit: p.limit,
+      page: p.page,
+      searchQuery: p.searchQuery,
+      orderBy: p.orderBy as { column: string; order: "ASC" | "DESC" } | null,
+    });
+  }
+
   const {
     projectId,
     filter,

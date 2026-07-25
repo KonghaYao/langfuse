@@ -60,6 +60,8 @@ import {
 import { recordDistribution } from "../instrumentation";
 import { DEFAULT_RENDERING_PROPS, RenderingProps } from "../utils/rendering";
 import { shouldSkipObservationsFinal } from "../queries/clickhouse-sql/query-options";
+import { isLiteMode } from "../adapters";
+import { liteGetObservationsForTrace } from "./lite-queries";
 
 /**
  * Checks if observation exists in clickhouse.
@@ -145,6 +147,10 @@ export const getObservationsForTrace = async <IncludeIO extends boolean>(
     includeIO = false,
     preferredClickhouseService,
   } = opts;
+
+  if (isLiteMode()) {
+    return liteGetObservationsForTrace(projectId, traceId, includeIO);
+  }
 
   // OTel projects use immutable spans - no need for deduplication
   const skipDedup = await shouldSkipObservationsFinal(projectId);

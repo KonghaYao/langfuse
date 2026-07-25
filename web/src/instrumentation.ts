@@ -11,5 +11,14 @@ export async function register() {
     console.log("Running init scripts...");
     await import("./observability.config");
     await import("./initialize");
+
+    // In lite mode, start the in-process worker (no separate worker process needed)
+    if (process.env.LANGFUSE_MODE === "lite") {
+      console.log("[Lite] Starting in-process worker...");
+      const { startInProcessWorker } = await import(
+        "@langfuse/shared/src/server/worker/in-process-worker"
+      );
+      await startInProcessWorker({ verboseLogging: false });
+    }
   }
 }

@@ -3,7 +3,9 @@
 
 import { Prisma, PrismaClient } from "@prisma/client";
 import { env } from "process";
+import { resolve } from "path";
 import { logger } from "./server";
+import { isLiteMode } from "./server/adapters";
 
 export class PrismaClientSingleton {
   private static instance: PrismaClient;
@@ -20,10 +22,26 @@ export class PrismaClientSingleton {
 }
 
 const createPrismaInstance = () => {
+  // In lite mode, Prisma uses SQLite via DATABASE_URL=file:./dev.db
+  // In full mode, Prisma uses PostgreSQL via DATABASE_URL=postgresql://...
+  let datasourceUrl: string | undefined;
+  if (isLiteMode()) {
+    const raw = env.DATABASE_URL ?? "file:./.langfuse/langfuse.db";
+    // Resolve relative file: paths to absolute so Prisma can always find the DB
+    // regardless of the process working directory.
+    if (raw.startsWith("file:") && !raw.startsWith("file:/")) {
+      const relPath = raw.slice("file:".length);
+      datasourceUrl = "file:" + resolve(process.cwd(), relPath);
+    } else {
+      datasourceUrl = raw;
+    }
+  }
+
   const client = new PrismaClient<
     Prisma.PrismaClientOptions,
     "warn" | "error" | "query"
   >({
+    ...(datasourceUrl ? { datasources: { db: { url: datasourceUrl } } } : {}),
     log: [
       { emit: "event", level: "query" },
       { emit: "event", level: "error" },

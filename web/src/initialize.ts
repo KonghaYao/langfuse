@@ -10,7 +10,10 @@ import {
   logger,
 } from "@langfuse/shared/src/server";
 
-await initializeClickhouseCompatibility();
+// In lite mode, skip ClickHouse initialization (uses SQLite instead)
+if (process.env.LANGFUSE_MODE !== "lite") {
+  await initializeClickhouseCompatibility();
+}
 
 // Warn if LANGFUSE_INIT_* variables are set but LANGFUSE_INIT_ORG_ID is missing
 if (!env.LANGFUSE_INIT_ORG_ID) {

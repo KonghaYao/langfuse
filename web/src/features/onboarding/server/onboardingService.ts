@@ -4,7 +4,7 @@ import {
   Role,
   SurveyName,
 } from "@langfuse/shared/src/db";
-import { resolveProjectRole } from "@langfuse/shared/src/server";
+import { resolveProjectRole, isLiteMode } from "@langfuse/shared/src/server";
 import { env } from "@/src/env.mjs";
 import { auditLog } from "@/src/features/audit-logs/auditLog";
 import {
@@ -272,12 +272,14 @@ export const completeCloudSignupOnboarding = async ({
   referralSource?: string;
 }) =>
   prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`
-      SELECT id
-      FROM users
-      WHERE id = ${userId}
-      FOR UPDATE
-    `;
+    if (!isLiteMode()) {
+      await tx.$queryRaw`
+        SELECT id
+        FROM users
+        WHERE id = ${userId}
+        FOR UPDATE
+      `;
+    }
 
     const existingSurvey = await tx.survey.findFirst({
       where: {
@@ -330,12 +332,14 @@ export const provisionStarterOrganizationForNewUser = async ({
   const createdResources = await prisma.$transaction(async (tx) => {
     // Serialize starter provisioning per user so concurrent first-login flows
     // cannot both observe "no real orgs yet" and create duplicate starters.
-    await tx.$queryRaw`
-      SELECT id
-      FROM users
-      WHERE id = ${userId}
-      FOR UPDATE
-    `;
+    if (!isLiteMode()) {
+      await tx.$queryRaw`
+        SELECT id
+        FROM users
+        WHERE id = ${userId}
+        FOR UPDATE
+      `;
+    }
 
     const realOrganizationMemberships = await getRealOrganizationMemberships({
       prisma: tx,

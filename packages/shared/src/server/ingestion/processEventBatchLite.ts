@@ -1,0 +1,250 @@
+/**
+ * Lite-mode event batch processing.
+ *
+ * Bypasses S3 + Redis entirely. Validates events using the same schema as
+ * full mode, then writes directly to SQLite via the TelemetryDBAdapter.
+ */
+
+import { z } from "zod";
+import {
+  InvalidRequestError,
+  UnauthorizedError,
+} from "../../errors";
+import { AuthHeaderValidVerificationResultIngestion } from "../auth/types";
+import { getClickhouseEntityType } from "../clickhouse/schemaUtils";
+import { logger } from "../logger";
+import {
+  eventTypes,
+  createIngestionEventSchema,
+  type IngestionEventType,
+} from "./types";
+import type { IngestionAttribution } from "./ingestionAttribution";
+import { getTelemetryDB } from "../adapters";
+
+type ProcessEventBatchLiteOptions = {
+  isLangfuseInternal?: boolean;
+  attribution: IngestionAttribution;
+};
+
+/**
+ * Serialize a value for SQLite storage.
+ */
+function serializeValue(value: unknown): unknown {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date)
+    return value.toISOString().replace("T", " ").replace("Z", "");
+  if (typeof value === "boolean") return value ? 1 : 0;
+  if (typeof value === "object") return JSON.stringify(value);
+  return value;
+}
+
+/**
+ * Convert an ingestion event body to a SQLite row for the given table.
+ */
+function eventToRow(
+  event: z.infer<ReturnType<typeof createIngestionEventSchema>>,
+  projectId: string,
+): { table: string; row: Record<string, unknown> } | null {
+  const entityType = getClickhouseEntityType(event.type);
+  const body = event.body as Record<string, unknown>;
+  const now = new Date().toISOString().replace("T", " ").replace("Z", "");
+
+  const baseRow: Record<string, unknown> = {
+    id: body.id,
+    project_id: projectId,
+    created_at: now,
+    updated_at: now,
+    event_ts: event.timestamp
+      ? new Date(event.timestamp as string)
+          .toISOString()
+          .replace("T", " ")
+          .replace("Z", "")
+      : now,
+    is_deleted: 0,
+  };
+
+  if (entityType === "trace") {
+    return {
+      table: "traces",
+      row: {
+        ...baseRow,
+        timestamp: body.timestamp
+          ? new Date(body.timestamp as string)
+              .toISOString()
+              .replace("T", " ")
+              .replace("Z", "")
+          : now,
+        name: body.name ?? null,
+        user_id: body.userId ?? null,
+        metadata: serializeValue(body.metadata) ?? "{}",
+        release: body.release ?? null,
+        version: body.version ?? null,
+        public: body.public ? 1 : 0,
+        bookmarked: 0,
+        tags: serializeValue(body.tags) ?? "[]",
+        input: serializeValue(body.input) ?? null,
+        output: serializeValue(body.output) ?? null,
+        session_id: body.sessionId ?? null,
+        environment: (body.environment as string) ?? "default",
+      },
+    };
+  }
+
+  if (entityType === "observation") {
+    return {
+      table: "observations",
+      row: {
+        ...baseRow,
+        trace_id: body.traceId ?? null,
+        parent_observation_id: body.parentObservationId ?? null,
+        type: (body.type as string)?.toUpperCase() ?? "SPAN",
+        name: body.name ?? null,
+        start_time: body.startTime
+          ? new Date(body.startTime as string)
+              .toISOString()
+              .replace("T", " ")
+              .replace("Z", "")
+          : now,
+        end_time: body.endTime
+          ? new Date(body.endTime as string)
+              .toISOString()
+              .replace("T", " ")
+              .replace("Z", "")
+          : null,
+        metadata: serializeValue(body.metadata) ?? "{}",
+        model: body.model ?? null,
+        input: serializeValue(body.input) ?? null,
+        output: serializeValue(body.output) ?? null,
+        level: (body.level as string) ?? "DEFAULT",
+        status_message: body.statusMessage ?? null,
+        completion_start_time: body.completionStartTime
+          ? new Date(body.completionStartTime as string)
+              .toISOString()
+              .replace("T", " ")
+              .replace("Z", "")
+          : null,
+        model_parameters: serializeValue(body.modelParameters) ?? "{}",
+        usage_details: serializeValue(body.usage ?? body.usageDetails) ?? "{}",
+        cost_details: serializeValue(body.costDetails) ?? "{}",
+        provided_usage_details:
+          serializeValue(body.usage ?? body.usageDetails) ?? "{}",
+        provided_cost_details: serializeValue(body.costDetails) ?? "{}",
+        total_cost: body.totalCost ?? null,
+        version: body.version ?? null,
+        environment: (body.environment as string) ?? "default",
+      },
+    };
+  }
+
+  if (entityType === "score") {
+    return {
+      table: "scores",
+      row: {
+        ...baseRow,
+        trace_id: body.traceId ?? null,
+        observation_id: body.observationId ?? null,
+        name: body.name ?? "unknown",
+        value: body.value ?? null,
+        string_value: body.stringValue ?? null,
+        source: (body.source as string) ?? "API",
+        comment: body.comment ?? null,
+        author_user_id: body.authorUserId ?? null,
+        config_id: body.configId ?? null,
+        data_type: (body.dataType as string) ?? "NUMERIC",
+        timestamp: body.timestamp
+          ? new Date(body.timestamp as string)
+              .toISOString()
+              .replace("T", " ")
+              .replace("Z", "")
+          : now,
+        environment: (body.environment as string) ?? "default",
+      },
+    };
+  }
+
+  return null;
+}
+
+export const processEventBatchLite = async (
+  input: unknown[],
+  authCheck: AuthHeaderValidVerificationResultIngestion,
+  options: ProcessEventBatchLiteOptions,
+): Promise<{
+  successes: { id: string; status: number }[];
+  errors: { id: string; status: number; message?: string; error?: string }[];
+}> => {
+  if (input.length === 0) {
+    return { successes: [], errors: [] };
+  }
+
+  const { isLangfuseInternal = false } = options;
+
+  if (!authCheck.scope.projectId) {
+    throw new UnauthorizedError("Missing project ID");
+  }
+
+  const projectId = authCheck.scope.projectId;
+  const ingestionSchema = createIngestionEventSchema(isLangfuseInternal);
+
+  const successes: { id: string; status: number }[] = [];
+  const errors: { id: string; status: number; message?: string; error?: string }[] = [];
+
+  // Validate and group events by table
+  const rowsByTable: Record<string, Record<string, unknown>[]> = {
+    traces: [],
+    observations: [],
+    scores: [],
+  };
+
+  for (const event of input) {
+    const parsed = ingestionSchema.safeParse(event);
+    if (!parsed.success) {
+      errors.push({
+        id:
+          typeof event === "object" && event && "id" in event
+            ? String((event as Record<string, unknown>).id)
+            : "unknown",
+        status: 400,
+        message: parsed.error.message,
+        error: "InvalidRequestError",
+      });
+      continue;
+    }
+
+    const ingestionEvent = parsed.data;
+
+    // Skip SDK_LOG events
+    if (ingestionEvent.type === eventTypes.SDK_LOG) {
+      successes.push({ id: ingestionEvent.id, status: 201 });
+      continue;
+    }
+
+    const result = eventToRow(ingestionEvent, projectId);
+    if (result) {
+      rowsByTable[result.table].push(result.row);
+      successes.push({ id: ingestionEvent.id, status: 201 });
+    } else {
+      // Unknown entity type – still mark as success (e.g. sdk-log)
+      successes.push({ id: ingestionEvent.id, status: 201 });
+    }
+  }
+
+  // Write to SQLite
+  const db = getTelemetryDB();
+  for (const [table, rows] of Object.entries(rowsByTable)) {
+    if (rows.length === 0) continue;
+    try {
+      await db.insert({
+        table: table as "traces" | "observations" | "scores",
+        records: rows,
+      });
+    } catch (error) {
+      logger.error(`[processEventBatchLite] Failed to insert into ${table}`, {
+        error: error instanceof Error ? error.message : String(error),
+        rowCount: rows.length,
+      });
+    }
+  }
+
+  return { successes, errors };
+};

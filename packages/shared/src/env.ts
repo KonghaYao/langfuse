@@ -38,6 +38,12 @@ const EnvSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
+  // Adapter mode: "full" uses ClickHouse/Redis/S3, "lite" uses SQLite/in-memory/local-fs.
+  LANGFUSE_MODE: z.enum(["full", "lite"]).default("full"),
+  // SQLite database path for lite mode telemetry storage.
+  LANGFUSE_SQLITE_DB_PATH: z.string().optional(),
+  // Local storage directory for lite mode file storage.
+  LANGFUSE_STORAGE_DIR: z.string().optional(),
   NEXTAUTH_URL: z.url().optional(),
   EMAIL_FROM_ADDRESS: z.string().optional(),
   // Standard SMTP URL (`smtp://`, `smtps://`) or `ses://<region>` to send via
@@ -111,14 +117,22 @@ const EnvSchema = z.object({
     .default(20_000),
   LANGFUSE_CACHE_PROMPT_ENABLED: z.enum(["true", "false"]).default("true"),
   LANGFUSE_CACHE_PROMPT_TTL_SECONDS: z.coerce.number().default(3600), // 1h
-  CLICKHOUSE_URL: z.url(),
+  // ClickHouse (optional in lite mode — uses SQLite instead)
+  CLICKHOUSE_URL:
+    process.env.LANGFUSE_MODE === "lite" ? z.string().optional() : z.url(),
   CLICKHOUSE_READ_ONLY_URL: z.url().optional(),
   CLICKHOUSE_EVENTS_READ_ONLY_URL: z.url().optional(),
   CLICKHOUSE_CLUSTER_ENABLED: z.enum(["true", "false"]).default("true"),
   CLICKHOUSE_CLUSTER_NAME: z.string().default("default"),
   CLICKHOUSE_DB: z.string().default("default"),
-  CLICKHOUSE_USER: z.string(),
-  CLICKHOUSE_PASSWORD: z.string(),
+  CLICKHOUSE_USER:
+    process.env.LANGFUSE_MODE === "lite"
+      ? z.string().optional()
+      : z.string(),
+  CLICKHOUSE_PASSWORD:
+    process.env.LANGFUSE_MODE === "lite"
+      ? z.string().optional()
+      : z.string(),
   CLICKHOUSE_KEEP_ALIVE_IDLE_SOCKET_TTL: z.coerce.number().int().default(9000),
   CLICKHOUSE_MAX_OPEN_CONNECTIONS: z.coerce.number().int().default(25),
   // Optional to allow for server-setting fallbacks
@@ -246,7 +260,10 @@ const EnvSchema = z.object({
     .min(1)
     .max(10)
     .default(3),
-  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: z.string(), // Langfuse requires a bucket name for S3 Event Uploads.
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET:
+      process.env.LANGFUSE_MODE === "lite"
+        ? z.string().optional()
+        : z.string(), // Langfuse requires a bucket name for S3 Event Uploads.
   LANGFUSE_S3_EVENT_UPLOAD_PREFIX: z.string().default(""),
   LANGFUSE_S3_EVENT_UPLOAD_REGION: z.string().optional(),
   LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: z.string().optional(),

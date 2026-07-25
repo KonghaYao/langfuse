@@ -48,6 +48,8 @@ import { DEFAULT_RENDERING_PROPS, RenderingProps } from "../utils/rendering";
 import { logger } from "../logger";
 import { traceException } from "../instrumentation";
 import { prisma } from "../../db";
+import { isLiteMode } from "../adapters";
+import { liteGetTraceById, liteHasAnyTrace, liteGetTracesIdentifierForSession } from "./lite-queries";
 
 /**
  * Checks if trace exists in clickhouse.
@@ -325,6 +327,10 @@ export const persistProjectHasTracesFlag = async (
 };
 
 export const hasAnyTrace = async (projectId: string) => {
+  if (isLiteMode()) {
+    return liteHasAnyTrace(projectId);
+  }
+
   // Check PostgreSQL flag first — once set, it's never reverted
   if (await readProjectHasTracesFlag(projectId)) {
     return true;
@@ -480,6 +486,10 @@ export const getTraceByIdFromTracesTable = async ({
   /** When true, sets metadata column to empty in the query to reduce database load */
   excludeMetadata?: boolean;
 }) => {
+  if (isLiteMode()) {
+    return liteGetTraceById(projectId, traceId);
+  }
+
   const input = {
     params: {
       traceId,
@@ -798,6 +808,17 @@ export const getTracesIdentifierForSessionFromTracesTable = async (
   projectId: string,
   sessionId: string,
 ) => {
+  if (isLiteMode()) {
+    const rows = await liteGetTracesIdentifierForSession(projectId, sessionId);
+    return rows.map((row) => ({
+      id: row.id,
+      userId: row.userId ?? "",
+      name: row.name ?? "",
+      timestamp: row.timestamp,
+      environment: "default",
+    }));
+  }
+
   const query = `
     SELECT
       id,
