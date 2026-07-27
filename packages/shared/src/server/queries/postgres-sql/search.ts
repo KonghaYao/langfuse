@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { TracingSearchType } from "../../../interfaces/search";
+import { isLiteMode } from "../../adapters";
 
 /**
  * Builds PostgreSQL search condition for full-text search using ILIKE.
@@ -51,7 +52,7 @@ export function postgresSearchCondition(params: {
   if (types.includes("id")) {
     for (const column of metadataColumns) {
       searchConditions.push(
-        Prisma.sql`${Prisma.raw(`${prefix}${column}`)} ILIKE ${`%${searchQuery}%`}`,
+        Prisma.sql`${Prisma.raw(`${prefix}${column}`)} ${Prisma.raw(isLiteMode() ? "LIKE" : "ILIKE")} ${`%${searchQuery}%`}`,
       );
     }
   }
@@ -64,7 +65,7 @@ export function postgresSearchCondition(params: {
   ) {
     for (const column of contentColumns.content) {
       searchConditions.push(
-        Prisma.sql`${Prisma.raw(`${prefix}${column}`)}::text ILIKE ${`%${searchQuery}%`}`,
+        Prisma.sql`${Prisma.raw(`${prefix}${column}`)}${Prisma.raw(isLiteMode() ? "" : "::text")} ${Prisma.raw(isLiteMode() ? "LIKE" : "ILIKE")} ${`%${searchQuery}%`}`,
       );
     }
   }
@@ -72,14 +73,14 @@ export function postgresSearchCondition(params: {
   // Search input only (only if column is defined)
   if (types.includes("input") && contentColumns.input) {
     searchConditions.push(
-      Prisma.sql`${Prisma.raw(`${prefix}${contentColumns.input}`)}::text ILIKE ${`%${searchQuery}%`}`,
+      Prisma.sql`${Prisma.raw(`${prefix}${contentColumns.input}`)}${Prisma.raw(isLiteMode() ? "" : "::text")} ${Prisma.raw(isLiteMode() ? "LIKE" : "ILIKE")} ${`%${searchQuery}%`}`,
     );
   }
 
   // Search output only (only if column is defined)
   if (types.includes("output") && contentColumns.output) {
     searchConditions.push(
-      Prisma.sql`${Prisma.raw(`${prefix}${contentColumns.output}`)}::text ILIKE ${`%${searchQuery}%`}`,
+      Prisma.sql`${Prisma.raw(`${prefix}${contentColumns.output}`)}${Prisma.raw(isLiteMode() ? "" : "::text")} ${Prisma.raw(isLiteMode() ? "LIKE" : "ILIKE")} ${`%${searchQuery}%`}`,
     );
   }
 

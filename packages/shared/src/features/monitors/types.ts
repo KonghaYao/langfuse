@@ -4,7 +4,7 @@ import {
   MonitorSeverity as PrismaMonitorSeverity,
   MonitorStatus as PrismaMonitorStatus,
   MonitorThresholdOperator as PrismaMonitorThresholdOperator,
-} from "@prisma/client";
+} from "../../prisma-enums";
 import { z } from "zod";
 
 import { InvalidRequestError } from "../../errors";

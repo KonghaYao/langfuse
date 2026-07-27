@@ -1,4 +1,4 @@
-import { JobExecutionStatus } from "@prisma/client";
+import { JobExecutionStatus } from "@langfuse/shared";
 import {
   logger,
   traceException,

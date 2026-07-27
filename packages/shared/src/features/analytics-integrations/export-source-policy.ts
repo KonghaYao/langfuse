@@ -42,7 +42,7 @@
 // which in practice only surfaces on self-hosted (Cloud does not run
 // events_only), where naming the env var is operator-appropriate.
 
-import { AnalyticsIntegrationExportSource } from "@prisma/client";
+import { AnalyticsIntegrationExportSource } from "../../prisma-enums";
 
 // NEXT_PUBLIC_LANGFUSE_BLOB_EXPORT_CUTOFF / _EXPORTER_CUTOFF override the
 // defaults for local dev testing.

@@ -578,3 +578,290 @@ export async function liteHasAnyTrace(projectId: string): Promise<boolean> {
     return false;
   }
 }
+
+// ============================================================================
+// Observation Queries (Public API)
+// ============================================================================
+
+/**
+ * Get a single observation by ID.
+ */
+export async function liteGetObservationById(
+  projectId: string,
+  observationId: string,
+): Promise<ObservationRecordReadType | undefined> {
+  const db = getTelemetryDB();
+
+  try {
+    const rows = await db.query<Record<string, unknown>>({
+      query: `SELECT * FROM observations WHERE project_id = @projectId AND id = @observationId AND is_deleted = 0 LIMIT 1`,
+      params: { projectId, observationId },
+    });
+
+    if (rows.length === 0) return undefined;
+
+    const row = rows[0];
+    return {
+      id: String(row.id),
+      trace_id: row.trace_id ? String(row.trace_id) : null,
+      project_id: String(row.project_id),
+      type: String(row.type ?? "SPAN"),
+      parent_observation_id: row.parent_observation_id
+        ? String(row.parent_observation_id)
+        : null,
+      environment: String(row.environment ?? "default"),
+      name: row.name ? String(row.name) : null,
+      metadata: safeJsonParse<Record<string, string>>(row.metadata, {}),
+      level: row.level ? String(row.level) : null,
+      status_message: row.status_message ? String(row.status_message) : null,
+      version: row.version ? String(row.version) : null,
+      input: row.input ? String(row.input) : null,
+      output: row.output ? String(row.output) : null,
+      provided_model_name: row.provided_model_name
+        ? String(row.provided_model_name)
+        : null,
+      internal_model_id: null,
+      model_parameters: row.model_parameters
+        ? String(row.model_parameters)
+        : null,
+      total_cost: row.total_cost ? Number(row.total_cost) : null,
+      usage_pricing_tier_id: null,
+      usage_pricing_tier_name: null,
+      prompt_id: row.prompt_id ? String(row.prompt_id) : null,
+      prompt_name: row.prompt_name ? String(row.prompt_name) : null,
+      prompt_version: row.prompt_version ? Number(row.prompt_version) : null,
+      tool_definitions: undefined,
+      tool_calls: undefined,
+      tool_call_names: undefined,
+      is_deleted: 0,
+      start_time: toDateStr(row.start_time),
+      end_time: row.end_time ? toDateStr(row.end_time) : null,
+      completion_start_time: row.completion_start_time
+        ? toDateStr(row.completion_start_time)
+        : null,
+      created_at: toDateStr(row.created_at),
+      updated_at: toDateStr(row.updated_at),
+      event_ts: toDateStr(row.event_ts),
+      provided_usage_details: toUsageRecord(row.provided_usage_details),
+      provided_cost_details: toUsageRecord(row.provided_cost_details),
+      usage_details: toUsageRecord(row.usage_details),
+      cost_details: toUsageRecord(row.cost_details),
+    } as ObservationRecordReadType;
+  } catch (error) {
+    logger.error("[liteGetObservationById] Query failed", error);
+    return undefined;
+  }
+}
+
+/**
+ * Get observations list with pagination.
+ */
+export async function liteGetObservationsTable(
+  projectId: string,
+  limit = 50,
+  page = 0,
+): Promise<ObservationRecordReadType[]> {
+  const db = getTelemetryDB();
+  const offset = limit * page;
+
+  try {
+    const rows = await db.query<Record<string, unknown>>({
+      query: `
+        SELECT * FROM observations
+        WHERE project_id = @projectId AND is_deleted = 0
+        ORDER BY start_time DESC
+        LIMIT @limit OFFSET @offset
+      `,
+      params: { projectId, limit, offset },
+    });
+
+    return rows.map((row) => ({
+      id: String(row.id),
+      trace_id: row.trace_id ? String(row.trace_id) : null,
+      project_id: String(row.project_id),
+      type: String(row.type ?? "SPAN"),
+      parent_observation_id: row.parent_observation_id
+        ? String(row.parent_observation_id)
+        : null,
+      environment: String(row.environment ?? "default"),
+      name: row.name ? String(row.name) : null,
+      metadata: safeJsonParse<Record<string, string>>(row.metadata, {}),
+      level: row.level ? String(row.level) : null,
+      status_message: row.status_message ? String(row.status_message) : null,
+      version: row.version ? String(row.version) : null,
+      input: row.input ? String(row.input) : null,
+      output: row.output ? String(row.output) : null,
+      provided_model_name: row.provided_model_name
+        ? String(row.provided_model_name)
+        : null,
+      internal_model_id: null,
+      model_parameters: row.model_parameters
+        ? String(row.model_parameters)
+        : null,
+      total_cost: row.total_cost ? Number(row.total_cost) : null,
+      usage_pricing_tier_id: null,
+      usage_pricing_tier_name: null,
+      prompt_id: row.prompt_id ? String(row.prompt_id) : null,
+      prompt_name: row.prompt_name ? String(row.prompt_name) : null,
+      prompt_version: row.prompt_version ? Number(row.prompt_version) : null,
+      tool_definitions: undefined,
+      tool_calls: undefined,
+      tool_call_names: undefined,
+      is_deleted: 0,
+      start_time: toDateStr(row.start_time),
+      end_time: row.end_time ? toDateStr(row.end_time) : null,
+      completion_start_time: row.completion_start_time
+        ? toDateStr(row.completion_start_time)
+        : null,
+      created_at: toDateStr(row.created_at),
+      updated_at: toDateStr(row.updated_at),
+      event_ts: toDateStr(row.event_ts),
+      provided_usage_details: toUsageRecord(row.provided_usage_details),
+      provided_cost_details: toUsageRecord(row.provided_cost_details),
+      usage_details: toUsageRecord(row.usage_details),
+      cost_details: toUsageRecord(row.cost_details),
+    })) as ObservationRecordReadType[];
+  } catch (error) {
+    logger.error("[liteGetObservationsTable] Query failed", error);
+    return [];
+  }
+}
+
+/**
+ * Get a single score by ID.
+ */
+export async function liteGetScoreById(
+  projectId: string,
+  scoreId: string,
+): Promise<ScoreRecordReadType | undefined> {
+  const db = getTelemetryDB();
+
+  try {
+    const rows = await db.query<Record<string, unknown>>({
+      query: `SELECT * FROM scores WHERE project_id = @projectId AND id = @scoreId AND is_deleted = 0 LIMIT 1`,
+      params: { projectId, scoreId },
+    });
+
+    if (rows.length === 0) return undefined;
+
+    const row = rows[0];
+    return {
+      id: String(row.id),
+      project_id: String(row.project_id),
+      trace_id: row.trace_id ? String(row.trace_id) : null,
+      session_id: null,
+      observation_id: row.observation_id ? String(row.observation_id) : null,
+      environment: String(row.environment ?? "default"),
+      name: String(row.name),
+      value: row.value != null ? Number(row.value) : null,
+      string_value: row.string_value ? String(row.string_value) : null,
+      data_type: String(row.data_type ?? "NUMERIC"),
+      source: String(row.source ?? "API"),
+      comment: row.comment ? String(row.comment) : null,
+      metadata: safeJsonParse<Record<string, string>>(row.metadata, {}),
+      author_user_id: row.author_user_id ? String(row.author_user_id) : null,
+      config_id: row.config_id ? String(row.config_id) : null,
+      queue_id: row.queue_id ? String(row.queue_id) : null,
+      execution_trace_id: row.execution_trace_id
+        ? String(row.execution_trace_id)
+        : null,
+      is_deleted: 0,
+      timestamp: toDateStr(row.timestamp),
+      created_at: toDateStr(row.created_at),
+      updated_at: toDateStr(row.updated_at),
+      event_ts: toDateStr(row.event_ts),
+    } as ScoreRecordReadType;
+  } catch (error) {
+    logger.error("[liteGetScoreById] Query failed", error);
+    return undefined;
+  }
+}
+
+/**
+ * Get scores list with pagination.
+ */
+export async function liteGetScoresTable(
+  projectId: string,
+  limit = 50,
+  page = 0,
+): Promise<ScoreRecordReadType[]> {
+  const db = getTelemetryDB();
+  const offset = limit * page;
+
+  try {
+    const rows = await db.query<Record<string, unknown>>({
+      query: `
+        SELECT * FROM scores
+        WHERE project_id = @projectId AND is_deleted = 0
+        ORDER BY timestamp DESC
+        LIMIT @limit OFFSET @offset
+      `,
+      params: { projectId, limit, offset },
+    });
+
+    return rows.map((row) => ({
+      id: String(row.id),
+      project_id: String(row.project_id),
+      trace_id: row.trace_id ? String(row.trace_id) : null,
+      session_id: null,
+      observation_id: row.observation_id ? String(row.observation_id) : null,
+      environment: String(row.environment ?? "default"),
+      name: String(row.name),
+      value: row.value != null ? Number(row.value) : null,
+      string_value: row.string_value ? String(row.string_value) : null,
+      data_type: String(row.data_type ?? "NUMERIC"),
+      source: String(row.source ?? "API"),
+      comment: row.comment ? String(row.comment) : null,
+      metadata: safeJsonParse<Record<string, string>>(row.metadata, {}),
+      author_user_id: row.author_user_id ? String(row.author_user_id) : null,
+      config_id: row.config_id ? String(row.config_id) : null,
+      queue_id: row.queue_id ? String(row.queue_id) : null,
+      execution_trace_id: row.execution_trace_id
+        ? String(row.execution_trace_id)
+        : null,
+      is_deleted: 0,
+      timestamp: toDateStr(row.timestamp),
+      created_at: toDateStr(row.created_at),
+      updated_at: toDateStr(row.updated_at),
+      event_ts: toDateStr(row.event_ts),
+    })) as ScoreRecordReadType[];
+  } catch (error) {
+    logger.error("[liteGetScoresTable] Query failed", error);
+    return [];
+  }
+}
+
+/**
+ * Get sessions list with pagination.
+ */
+export async function liteGetSessionsTable(
+  projectId: string,
+  limit = 50,
+  page = 0,
+): Promise<Array<{ id: string; projectId: string; createdAt: Date }>> {
+  const db = getTelemetryDB();
+  const offset = limit * page;
+
+  try {
+    const rows = await db.query<Record<string, unknown>>({
+      query: `
+        SELECT DISTINCT session_id as id, project_id, MIN(created_at) as created_at
+        FROM traces
+        WHERE project_id = @projectId AND session_id IS NOT NULL AND is_deleted = 0
+        GROUP BY session_id
+        ORDER BY created_at DESC
+        LIMIT @limit OFFSET @offset
+      `,
+      params: { projectId, limit, offset },
+    });
+
+    return rows.map((row) => ({
+      id: String(row.id),
+      projectId: String(row.project_id),
+      createdAt: new Date(String(row.created_at).replace(" ", "T") + "Z"),
+    }));
+  } catch (error) {
+    logger.error("[liteGetSessionsTable] Query failed", error);
+    return [];
+  }
+}

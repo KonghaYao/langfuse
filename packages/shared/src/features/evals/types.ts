@@ -1,8 +1,8 @@
+import { type EvalTemplate } from "@prisma/client";
 import {
   EvalTemplateSourceCodeLanguage,
   EvalTemplateType,
-  type EvalTemplate,
-} from "@prisma/client";
+} from "../../prisma-enums";
 import z from "zod";
 
 export type EvalTemplateLlmAsAJudge = EvalTemplate & {

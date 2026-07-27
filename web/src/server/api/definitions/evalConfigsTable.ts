@@ -4,6 +4,9 @@ import {
   JobConfigState,
 } from "@langfuse/shared";
 
+// Lightweight check to avoid importing heavy server barrel into client bundle
+const isLite = process.env.LANGFUSE_MODE === "lite";
+
 export const evalConfigTargetOptions = Object.values(EvalTargetObject).map(
   (value) => ({
     value,
@@ -14,10 +17,10 @@ export const evalConfigTargetValues = evalConfigTargetOptions.map(
   (option) => option.value,
 );
 
-const evaluatorDisplayStatusSql = `CASE
+const getEvaluatorDisplayStatusSql = () => `CASE
   WHEN jc."status" = 'INACTIVE' THEN 'INACTIVE'
   WHEN jc."blocked_at" IS NOT NULL THEN 'PAUSED'
-  ELSE jc."status"::text
+  ELSE ${isLite ? 'jc."status"' : 'jc."status"::text'}
 END`;
 
 const evaluatorStatusSortRankSql = `CASE
@@ -31,7 +34,7 @@ export const evalConfigFilterColumns: ColumnDefinition[] = [
     name: "Status",
     id: "status",
     type: "stringOptions",
-    internal: evaluatorDisplayStatusSql,
+    internal: getEvaluatorDisplayStatusSql(),
     options: [...Object.values(JobConfigState), "PAUSED"].map((value) => ({
       value,
     })),

@@ -5,7 +5,10 @@ import {
   type PromptType,
 } from "@langfuse/shared";
 import { prisma } from "@langfuse/shared/src/db";
-import { tableColumnsToSqlFilterAndPrefix } from "@langfuse/shared/src/server";
+import {
+  tableColumnsToSqlFilterAndPrefix,
+  isLiteMode,
+} from "@langfuse/shared/src/server";
 
 export type GetPromptsMetaParams = GetPromptsMetaType & { projectId: string };
 
@@ -13,6 +16,10 @@ export const getPromptsMeta = async (
   params: GetPromptsMetaParams,
 ): Promise<PromptsMetaResponse> => {
   const { projectId, page, limit } = params;
+
+  if (isLiteMode()) {
+    return getPromptsMetaLite(params);
+  }
 
   const promptsMeta = (await prisma.$queryRaw`
     WITH versions AS (
@@ -163,4 +170,100 @@ const getPromptsFilterCondition = (params: GetPromptsMetaType) => {
   }
 
   return tableColumnsToSqlFilterAndPrefix(filters, promptsTableCols, "prompts");
+};
+
+/**
+ * Lite mode (SQLite) implementation using Prisma query builder.
+ * Avoids PG-specific array_agg, LATERAL unnest, FILTER clauses.
+ */
+const getPromptsMetaLite = async (
+  params: GetPromptsMetaParams,
+): Promise<PromptsMetaResponse> => {
+  const { projectId, page, limit, name, version, label, tag, fromUpdatedAt, toUpdatedAt } = params;
+
+  // Build Prisma where clause
+  const where: Record<string, unknown> = { projectId };
+  if (name) where.name = name;
+  if (version) where.version = version;
+  if (fromUpdatedAt || toUpdatedAt) {
+    where.updatedAt = {};
+    if (fromUpdatedAt) (where.updatedAt as Record<string, unknown>).gte = new Date(fromUpdatedAt);
+    if (toUpdatedAt) (where.updatedAt as Record<string, unknown>).lt = new Date(toUpdatedAt);
+  }
+
+  // Get all prompts matching filters
+  const allPrompts = await prisma.prompt.findMany({
+    where: where as never,
+    orderBy: [{ name: "asc" }, { version: "desc" }],
+  });
+
+  // Filter by label/tag in JS (stored as JSON arrays in SQLite)
+  let filtered = allPrompts;
+  if (label) {
+    filtered = filtered.filter((p) => {
+      const labels = JSON.parse((p.labels as string) || "[]") as string[];
+      return labels.includes(label);
+    });
+  }
+  if (tag) {
+    filtered = filtered.filter((p) => {
+      const tags = JSON.parse((p.tags as string) || "[]") as string[];
+      return tags.includes(tag);
+    });
+  }
+
+  // Group by name
+  const grouped = new Map<
+    string,
+    { versions: number[]; labels: Set<string>; tags: string[]; lastUpdatedAt: Date; type: string; config: unknown }
+  >();
+
+  for (const p of filtered) {
+    const existing = grouped.get(p.name);
+    const pLabels = JSON.parse((p.labels as string) || "[]") as string[];
+    const pTags = JSON.parse((p.tags as string) || "[]") as string[];
+
+    if (!existing) {
+      grouped.set(p.name, {
+        versions: [p.version],
+        labels: new Set(pLabels),
+        tags: pTags,
+        lastUpdatedAt: p.updatedAt,
+        type: p.type, // first entry is latest due to ORDER BY version DESC
+        config: p.config,
+      });
+    } else {
+      existing.versions.push(p.version);
+      pLabels.forEach((l) => existing.labels.add(l));
+      if (p.updatedAt > existing.lastUpdatedAt) {
+        existing.lastUpdatedAt = p.updatedAt;
+      }
+    }
+  }
+
+  const totalItems = grouped.size;
+  const totalPages = Math.ceil(totalItems / limit);
+
+  // Paginate
+  const names = Array.from(grouped.keys()).sort();
+  const pagedNames = names.slice((page - 1) * limit, page * limit);
+
+  const data: PromptsMeta[] = pagedNames.map((n) => {
+    const g = grouped.get(n)!;
+    return {
+      name: n,
+      versions: g.versions.sort((a, b) => a - b),
+      labels: Array.from(g.labels),
+      tags: g.tags,
+      lastUpdatedAt: g.lastUpdatedAt,
+      type: g.type as PromptType,
+      lastConfig: g.config ? JSON.parse(g.config as string) : {},
+    };
+  });
+
+  return {
+    data,
+    meta: { page, limit, totalPages, totalItems },
+    pagination: { page, limit, totalPages, totalItems },
+  };
 };

@@ -13,6 +13,7 @@ import { validateCommentReferenceObject } from "@/src/features/comments/validate
 import {
   getTracesIdentifierForSession,
   getTracesIdentifierForSessionFromEvents,
+  isLiteMode,
   logger,
   NotificationQueue,
   QueueJobs,
@@ -200,6 +201,54 @@ export const commentsRouter = createTRPCRouter({
         scope: "comments:read",
       });
 
+      if (isLiteMode()) {
+        // SQLite-compatible path using Prisma query builder
+        const rawComments = await ctx.prisma.comment.findMany({
+          where: {
+            projectId: input.projectId,
+            objectId: input.objectId,
+            objectType: input.objectType,
+          },
+          orderBy: { createdAt: "desc" },
+        });
+
+        // Fetch author user info
+        const authorIds = Array.from(
+          new Set(
+            rawComments
+              .map((c) => c.authorUserId)
+              .filter((id): id is string => id != null),
+          ),
+        );
+        const users =
+          authorIds.length > 0
+            ? await ctx.prisma.user.findMany({
+                where: { id: { in: authorIds } },
+                select: { id: true, image: true, name: true },
+              })
+            : [];
+        const userMap = new Map(users.map((u) => [u.id, u]));
+
+        return rawComments.map((c) => {
+          const user = c.authorUserId
+            ? userMap.get(c.authorUserId)
+            : undefined;
+          return {
+            id: c.id,
+            content: c.content,
+            createdAt: c.createdAt,
+            updatedAt: c.updatedAt,
+            authorUserId: c.authorUserId,
+            authorUserImage: user?.image ?? null,
+            authorUserName: user?.name ?? null,
+            dataField: c.dataField,
+            path: JSON.parse(c.path || "[]") as string[],
+            rangeStart: JSON.parse(c.rangeStart || "[]") as number[],
+            rangeEnd: JSON.parse(c.rangeEnd || "[]") as number[],
+          };
+        });
+      }
+
       // For single object view, we want DESC order (most recent first)
       const comments = await ctx.prisma.$queryRaw<
         Array<{
@@ -364,6 +413,78 @@ export const commentsRouter = createTRPCRouter({
 
       if (traceIds.length === 0) {
         return {};
+      }
+
+      if (isLiteMode()) {
+        // SQLite-compatible path using Prisma query builder
+        const rawComments = await ctx.prisma.comment.findMany({
+          where: {
+            projectId: input.projectId,
+            objectType: "TRACE",
+            objectId: { in: traceIds },
+          },
+          orderBy: { createdAt: "asc" },
+        });
+
+        const authorIds = Array.from(
+          new Set(
+            rawComments
+              .map((c) => c.authorUserId)
+              .filter((id): id is string => id != null),
+          ),
+        );
+        const users =
+          authorIds.length > 0
+            ? await ctx.prisma.user.findMany({
+                where: { id: { in: authorIds } },
+                select: { id: true, image: true, name: true },
+              })
+            : [];
+        const userMap = new Map(users.map((u) => [u.id, u]));
+
+        const commentsByTrace: Record<
+          string,
+          Array<{
+            id: string;
+            objectId: string;
+            content: string;
+            createdAt: Date;
+            updatedAt: Date;
+            authorUserId: string | null;
+            authorUserImage: string | null;
+            authorUserName: string | null;
+            dataField: string | null;
+            path: string[];
+            rangeStart: number[];
+            rangeEnd: number[];
+          }>
+        > = {};
+
+        for (const c of rawComments) {
+          const user = c.authorUserId
+            ? userMap.get(c.authorUserId)
+            : undefined;
+          const enriched = {
+            id: c.id,
+            objectId: c.objectId,
+            content: c.content,
+            createdAt: c.createdAt,
+            updatedAt: c.updatedAt,
+            authorUserId: c.authorUserId,
+            authorUserImage: user?.image ?? null,
+            authorUserName: user?.name ?? null,
+            dataField: c.dataField,
+            path: JSON.parse(c.path || "[]") as string[],
+            rangeStart: JSON.parse(c.rangeStart || "[]") as number[],
+            rangeEnd: JSON.parse(c.rangeEnd || "[]") as number[],
+          };
+          if (!commentsByTrace[c.objectId]) {
+            commentsByTrace[c.objectId] = [];
+          }
+          commentsByTrace[c.objectId].push(enriched);
+        }
+
+        return commentsByTrace;
       }
 
       // Fetch all comments for the traces with user information (ASC order for chronological listing)

@@ -2,6 +2,8 @@ import { env } from "../env";
 import winston from "winston";
 import { getCurrentSpan } from "./instrumentation";
 import { propagation, context } from "@opentelemetry/api";
+import * as path from "path";
+import * as fs from "fs";
 
 const tracingFormat = function () {
   return winston.format((info) => {
@@ -47,11 +49,55 @@ const getWinstonLogger = (
 
   const format =
     env.LANGFUSE_LOG_FORMAT === "text" ? textLoggerFormat : jsonLoggerFormat;
+
+  const transports: winston.transport[] = [
+    new winston.transports.Console(),
+  ];
+
+  // In lite mode, persist logs to .langfuse/logs/ for post-mortem debugging.
+  if (process.env.LANGFUSE_MODE === "lite") {
+    const logDir = path.resolve(
+      findMonorepoRoot(),
+      ".langfuse",
+      "logs",
+    );
+    fs.mkdirSync(logDir, { recursive: true });
+    transports.push(
+      new winston.transports.File({
+        filename: path.join(logDir, "langfuse.log"),
+        maxsize: 10 * 1024 * 1024, // 10 MB
+        maxFiles: 5,
+        tailable: true,
+      }),
+      new winston.transports.File({
+        filename: path.join(logDir, "error.log"),
+        level: "error",
+        maxsize: 5 * 1024 * 1024, // 5 MB
+        maxFiles: 3,
+        tailable: true,
+      }),
+    );
+  }
+
   return winston.createLogger({
     level: minLevel,
     format: format,
-    transports: [new winston.transports.Console()],
+    transports,
   });
 };
+
+/** Find monorepo root by traversing up from CWD looking for pnpm-workspace.yaml */
+function findMonorepoRoot(): string {
+  let dir = process.cwd();
+  for (let i = 0; i < 10; i++) {
+    if (fs.existsSync(path.join(dir, "pnpm-workspace.yaml"))) {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return process.cwd();
+}
 
 export const logger = getWinstonLogger(env.NODE_ENV, env.LANGFUSE_LOG_LEVEL);

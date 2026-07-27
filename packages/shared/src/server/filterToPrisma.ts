@@ -4,15 +4,16 @@ import { FilterState } from "../types";
 import { filterOperators, timeFilter } from "../interfaces/filters";
 import { z } from "zod";
 import { logger } from "./index";
+import { isLiteMode } from "./adapters";
 
-const operatorReplacements = {
+const getOperatorReplacements = () => ({
   "any of": "IN",
   "none of": "NOT IN",
-  contains: "ILIKE",
-  "does not contain": "NOT ILIKE",
-  "starts with": "ILIKE",
-  "ends with": "ILIKE",
-};
+  contains: isLiteMode() ? "LIKE" : "ILIKE",
+  "does not contain": isLiteMode() ? "NOT LIKE" : "NOT ILIKE",
+  "starts with": isLiteMode() ? "LIKE" : "ILIKE",
+  "ends with": isLiteMode() ? "LIKE" : "ILIKE",
+});
 
 const arrayOperatorReplacements = {
   "any of": "&&",
@@ -66,6 +67,7 @@ export function tableColumnsToSqlFilter(
 
   const statements = internalFilters.map((filterAndColumn) => {
     const filter = filterAndColumn.condition;
+    const operatorReplacements = getOperatorReplacements();
     const operatorPrisma =
       filter.type === "arrayOptions"
         ? Prisma.raw(
@@ -85,11 +87,15 @@ export function tableColumnsToSqlFilter(
     let valuePrisma: Prisma.Sql;
     switch (filter.type) {
       case "datetime":
-        valuePrisma = Prisma.sql`${filter.value}::timestamp with time zone at time zone 'UTC'`;
+        valuePrisma = isLiteMode()
+          ? Prisma.sql`${filter.value}`
+          : Prisma.sql`${filter.value}::timestamp with time zone at time zone 'UTC'`;
         break;
       case "number":
       case "numberObject":
-        valuePrisma = Prisma.sql`${filter.value.toString()}::DOUBLE PRECISION`;
+        valuePrisma = isLiteMode()
+          ? Prisma.sql`${filter.value.toString()}`
+          : Prisma.sql`${filter.value.toString()}::DOUBLE PRECISION`;
         break;
       case "string":
       case "stringObject":
@@ -101,10 +107,18 @@ export function tableColumnsToSqlFilter(
         )})`;
         break;
       case "arrayOptions":
-        valuePrisma = Prisma.sql`ARRAY[${Prisma.join(
-          filter.value.map((v) => Prisma.sql`${v}`),
-          ", ",
-        )}] `;
+        if (isLiteMode()) {
+          // SQLite: arrays stored as JSON strings, use LIKE-based matching
+          valuePrisma = Prisma.sql`${Prisma.join(
+            filter.value.map((v) => Prisma.sql`${`%${v}%`}`),
+            ", ",
+          )}`;
+        } else {
+          valuePrisma = Prisma.sql`ARRAY[${Prisma.join(
+            filter.value.map((v) => Prisma.sql`${v}`),
+            ", ",
+          )}] `;
+        }
         break;
       case "boolean":
         valuePrisma = Prisma.sql`${filter.value}`;
@@ -125,7 +139,9 @@ export function tableColumnsToSqlFilter(
     }
     const jsonKeyPrisma =
       filter.type === "stringObject" || filter.type === "numberObject"
-        ? Prisma.sql`->>${filter.key}`
+        ? isLiteMode()
+          ? Prisma.empty // handled via json_extract in lite mode
+          : Prisma.sql`->>${filter.key}`
         : Prisma.empty;
     const [cast1, cast2] =
       filter.type === "numberObject"
@@ -166,6 +182,7 @@ const castValueToPostgresTypes = (
   column: ColumnDefinition,
   table: TableNames,
 ) => {
+  if (isLiteMode()) return Prisma.empty;
   return column.name === "type" &&
     (table === "observations" ||
       table === "traces_observations" ||
@@ -191,7 +208,7 @@ export const datetimeFilterToPrismaSql = (
 
   return Prisma.sql`AND ${Prisma.raw(safeColumn)} ${Prisma.raw(
     operator,
-  )} ${value}::timestamp with time zone at time zone 'UTC'`;
+  )} ${isLiteMode() ? Prisma.sql`${value}` : Prisma.sql`${value}::timestamp with time zone at time zone 'UTC'`}`;
 };
 
 export const datetimeFilterToPrisma = (

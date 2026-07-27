@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { z } from "zod";
-import { JobExecutionStatus } from "@prisma/client";
+import { JobExecutionStatus } from "@langfuse/shared";
 import { prisma } from "@langfuse/shared/src/db";
 import {
   buildEventBucketPrefix,

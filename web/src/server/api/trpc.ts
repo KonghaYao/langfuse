@@ -157,18 +157,30 @@ const logErrorByStatus = ({
   httpStatus: number;
   error: TRPCError;
 }) => {
+  // Extract underlying error message for better debugging
+  const causeMsg =
+    error.cause instanceof Error
+      ? error.cause.message
+      : error.cause
+        ? String(error.cause)
+        : "";
+  const detailMsg = causeMsg ? `: ${causeMsg}` : "";
+
   if (errorCode === "NOT_FOUND" || errorCode === "UNAUTHORIZED") {
-    logger.info(`middleware intercepted error with code ${errorCode}`, {
-      error,
-    });
+    logger.info(
+      `middleware intercepted error with code ${errorCode}${detailMsg}`,
+      { error },
+    );
   } else if (httpStatus >= 400 && httpStatus < 500) {
-    logger.warn(`middleware intercepted error with code ${errorCode}`, {
-      error,
-    });
+    logger.warn(
+      `middleware intercepted error with code ${errorCode}${detailMsg}`,
+      { error },
+    );
   } else {
-    logger.error(`middleware intercepted error with code ${errorCode}`, {
-      error,
-    });
+    logger.error(
+      `middleware intercepted error with code ${errorCode}${detailMsg}`,
+      { error },
+    );
   }
 };
 

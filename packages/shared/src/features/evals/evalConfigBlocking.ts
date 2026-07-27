@@ -2,7 +2,7 @@ import {
   EvaluatorBlockReason,
   JobConfigState,
   JobExecutionStatus,
-} from "@prisma/client";
+} from "../../prisma-enums";
 import { z } from "zod";
 
 export const PausedEvaluatorDisplayState = "PAUSED" as const;

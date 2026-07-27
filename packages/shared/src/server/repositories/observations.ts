@@ -60,8 +60,8 @@ import {
 import { recordDistribution } from "../instrumentation";
 import { DEFAULT_RENDERING_PROPS, RenderingProps } from "../utils/rendering";
 import { shouldSkipObservationsFinal } from "../queries/clickhouse-sql/query-options";
-import { isLiteMode } from "../adapters";
-import { liteGetObservationsForTrace } from "./lite-queries";
+import { isLiteMode, getTelemetryDB } from "../adapters";
+import { liteGetObservationsForTrace, liteGetObservationsTable, liteGetObservationById } from "./lite-queries";
 
 /**
  * Checks if observation exists in clickhouse.
@@ -149,7 +149,12 @@ export const getObservationsForTrace = async <IncludeIO extends boolean>(
   } = opts;
 
   if (isLiteMode()) {
-    return liteGetObservationsForTrace(projectId, traceId, includeIO);
+    const records = await liteGetObservationsForTrace(
+      projectId,
+      traceId,
+      includeIO,
+    );
+    return records.map((r) => convertObservation({ ...r, metadata: r.metadata ?? {} }));
   }
 
   // OTel projects use immutable spans - no need for deduplication
@@ -353,6 +358,15 @@ export const getObservationByIdFromObservationsTable = async ({
   renderingProps?: RenderingProps;
   preferredClickhouseService?: PreferredClickhouseService;
 }) => {
+  // Lite mode: use SQLite query
+  if (isLiteMode()) {
+    const record = await liteGetObservationById(projectId, id);
+    if (!record) {
+      throw new LangfuseNotFoundError(`Observation with id ${id} not found`);
+    }
+    return convertObservation({ ...record, metadata: record.metadata ?? {} }, renderingProps);
+  }
+
   const records = await getObservationByIdInternal({
     id,
     projectId,
@@ -2048,6 +2062,16 @@ export const generateObservationsForPublicApi = async ({
   filter: FilterList;
   pagination: { limit: number; page: number };
 }) => {
+  // Lite mode: use SQLite queries
+  if (isLiteMode()) {
+    const records = await liteGetObservationsTable(
+      projectId,
+      pagination.limit,
+      pagination.page - 1,
+    );
+    return records.map((r) => convertObservation({ ...r, metadata: r.metadata ?? {} }));
+  }
+
   const appliedFilter = filter.apply();
   const traceFilter = filter.find((f) => f.clickhouseTable === "traces");
 
@@ -2132,6 +2156,16 @@ export const getObservationsCountForPublicApi = async ({
   projectId: string;
   filter: FilterList;
 }) => {
+  // Lite mode: return count from SQLite
+  if (isLiteMode()) {
+    const db = getTelemetryDB();
+    const rows = await db.query({
+      query: `SELECT COUNT(*) as count FROM observations WHERE project_id = @projectId AND is_deleted = 0`,
+      params: { projectId },
+    });
+    return rows.length > 0 ? Number((rows[0] as { count: number }).count) : 0;
+  }
+
   const appliedFilter = filter.apply();
   const traceFilter = filter.find((f) => f.clickhouseTable === "traces");
 

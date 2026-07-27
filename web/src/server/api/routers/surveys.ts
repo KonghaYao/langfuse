@@ -4,7 +4,7 @@ import {
   authenticatedProcedure,
 } from "@/src/server/api/trpc";
 import { TRPCError } from "@trpc/server";
-import { SurveyName } from "@prisma/client";
+import { SurveyName } from "@langfuse/shared";
 import { logger } from "@langfuse/shared/src/server";
 
 const surveyResponseSchema = z.object({

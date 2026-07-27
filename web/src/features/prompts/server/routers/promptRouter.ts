@@ -40,6 +40,7 @@ import {
   getAggregatedScoresForPrompts,
   getAggregatedScoresForPromptsFromEvents,
   postgresSearchCondition,
+  isLiteMode,
 } from "@langfuse/shared/src/server";
 import { aggregateScores } from "@/src/features/scores/lib/aggregateScores";
 import { TRPCError } from "@trpc/server";
@@ -125,7 +126,9 @@ export const promptRouter = createTRPCRouter({
 
       const additionalConditions = input.searchType?.includes("id")
         ? [
-            Prisma.sql`EXISTS (SELECT 1 FROM UNNEST(p.tags) AS tag WHERE tag ILIKE ${`%${input.searchQuery}%`})`,
+            isLiteMode()
+              ? Prisma.sql`p.tags LIKE ${`%${input.searchQuery}%`}`
+              : Prisma.sql`EXISTS (SELECT 1 FROM UNNEST(p.tags) AS tag WHERE tag ILIKE ${`%${input.searchQuery}%`})`,
           ]
         : [];
 
@@ -218,7 +221,9 @@ export const promptRouter = createTRPCRouter({
 
       const additionalConditions = input.searchType?.includes("id")
         ? [
-            Prisma.sql`EXISTS (SELECT 1 FROM UNNEST(p.tags) AS tag WHERE tag ILIKE ${`%${input.searchQuery}%`})`,
+            isLiteMode()
+              ? Prisma.sql`p.tags LIKE ${`%${input.searchQuery}%`}`
+              : Prisma.sql`EXISTS (SELECT 1 FROM UNNEST(p.tags) AS tag WHERE tag ILIKE ${`%${input.searchQuery}%`})`,
           ]
         : [];
 
@@ -465,21 +470,56 @@ export const promptRouter = createTRPCRouter({
             name: "asc",
           },
         }),
-        ctx.prisma.$queryRaw<{ value: string }[]>`
-          SELECT tags.tag as value
-          FROM prompts, UNNEST(prompts.tags) AS tags(tag)
-          WHERE prompts.project_id = ${input.projectId}
-          GROUP BY tags.tag
-          ORDER BY tags.tag ASC;
-        `,
-        ctx.prisma.$queryRaw<{ value: string }[]>`
-          SELECT labels.label as value
-          FROM prompts, UNNEST(prompts.labels) AS labels(label)
-          WHERE prompts.project_id = ${input.projectId}
-          GROUP BY labels.label
-          ORDER BY labels.label ASC;
-        `,
+        isLiteMode()
+          ? ctx.prisma.prompt.findMany({
+              where: { projectId: input.projectId },
+              select: { tags: true },
+            })
+          : ctx.prisma.$queryRaw<{ value: string }[]>`
+              SELECT tags.tag as value
+              FROM prompts, UNNEST(prompts.tags) AS tags(tag)
+              WHERE prompts.project_id = ${input.projectId}
+              GROUP BY tags.tag
+              ORDER BY tags.tag ASC;
+            `,
+        isLiteMode()
+          ? ctx.prisma.prompt.findMany({
+              where: { projectId: input.projectId },
+              select: { labels: true },
+            })
+          : ctx.prisma.$queryRaw<{ value: string }[]>`
+              SELECT labels.label as value
+              FROM prompts, UNNEST(prompts.labels) AS labels(label)
+              WHERE prompts.project_id = ${input.projectId}
+              GROUP BY labels.label
+              ORDER BY labels.label ASC;
+            `,
       ]);
+
+      // In lite mode, extract unique tags/labels from JSON arrays in JS
+      const tagsResult = isLiteMode()
+        ? Array.from(
+            new Set(
+              (tags as { tags: string }[]).flatMap((t) =>
+                JSON.parse((t.tags as string) || "[]") as string[],
+              ),
+            ),
+          )
+            .sort()
+            .map((v) => ({ value: v }))
+        : (tags as { value: string }[]);
+
+      const labelsResult = isLiteMode()
+        ? Array.from(
+            new Set(
+              (labels as { labels: string }[]).flatMap((l) =>
+                JSON.parse((l.labels as string) || "[]") as string[],
+              ),
+            ),
+          )
+            .sort()
+            .map((v) => ({ value: v }))
+        : (labels as { value: string }[]);
 
       const res = {
         name: names
@@ -487,8 +527,8 @@ export const promptRouter = createTRPCRouter({
           .map((name) => ({
             value: name.name ?? "undefined",
           })),
-        labels: labels,
-        tags: tags,
+        labels: labelsResult,
+        tags: tagsResult,
       };
       return res;
     }),
@@ -1007,14 +1047,29 @@ export const promptRouter = createTRPCRouter({
         scope: "prompts:read",
       });
 
-      const labels = await ctx.prisma.$queryRaw<{ label: string }[]>`
-        SELECT DISTINCT UNNEST(labels) AS label
-        FROM prompts
-        WHERE project_id = ${input.projectId}
-        AND labels IS NOT NULL;
-      `;
+      const labels = isLiteMode()
+        ? await ctx.prisma.prompt.findMany({
+            where: { projectId: input.projectId },
+            select: { labels: true },
+          })
+        : await ctx.prisma.$queryRaw<{ label: string }[]>`
+            SELECT DISTINCT UNNEST(labels) AS label
+            FROM prompts
+            WHERE project_id = ${input.projectId}
+            AND labels IS NOT NULL;
+          `;
 
-      return labels.map((l) => l.label);
+      if (isLiteMode()) {
+        return Array.from(
+          new Set(
+            (labels as { labels: string }[]).flatMap((l) =>
+              JSON.parse((l.labels as string) || "[]") as string[],
+            ),
+          ),
+        ).sort();
+      }
+
+      return (labels as { label: string }[]).map((l) => l.label);
     }),
   allNames: protectedProjectProcedure
     .input(
@@ -1054,6 +1109,26 @@ export const promptRouter = createTRPCRouter({
         projectId: input.projectId,
         scope: "prompts:read",
       });
+
+      if (isLiteMode()) {
+        const prompts = await ctx.prisma.prompt.findMany({
+          where: { projectId: input.projectId, type: "text" },
+          select: { name: true, version: true, labels: true },
+        });
+        const grouped = new Map<string, { versions: Set<number>; labels: Set<string> }>();
+        for (const p of prompts) {
+          const existing = grouped.get(p.name) ?? { versions: new Set(), labels: new Set() };
+          existing.versions.add(p.version);
+          const pLabels = JSON.parse((p.labels as string) || "[]") as string[];
+          pLabels.forEach((l) => existing.labels.add(l));
+          grouped.set(p.name, existing);
+        }
+        return Array.from(grouped.entries()).map(([name, g]) => ({
+          name,
+          versions: Array.from(g.versions).sort((a, b) => a - b),
+          labels: Array.from(g.labels).sort(),
+        }));
+      }
 
       const query = Prisma.sql`
         SELECT
@@ -1553,6 +1628,37 @@ const generatePromptQuery = (
   pathPrefix?: string,
 ) => {
   const prefix = pathPrefix ?? "";
+
+  // Lite mode: simplified flat query without folder grouping (SQLite-compatible)
+  if (isLiteMode()) {
+    const nameFilter = prefix
+      ? Prisma.sql`AND p.name LIKE ${`${prefix}/%`}`
+      : Prisma.empty;
+    return Prisma.sql`
+      WITH latest AS (
+        SELECT p.*
+        FROM prompts p
+        WHERE (p.name, p.version) IN (
+          SELECT name, MAX(version)
+          FROM prompts p
+          WHERE p.project_id = ${projectId}
+            ${filterCondition}
+            ${pathFilter}
+            ${searchFilter}
+          GROUP BY name
+        )
+          AND p.project_id = ${projectId}
+          ${filterCondition}
+          ${pathFilter}
+          ${searchFilter}
+          ${nameFilter}
+      )
+      SELECT ${select}, 'prompt' as row_type
+      FROM latest p
+      ${orderCondition}
+      LIMIT ${limit} OFFSET ${page * limit}
+    `;
+  }
 
   // CTE to get latest versions (same for root and folder queries)
   const latestCTE = Prisma.sql`

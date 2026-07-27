@@ -85,6 +85,39 @@ export {
 
 // export db types only
 export * from "@prisma/client";
+// Enum compat: explicit exports override star-export above (SQLite has no enums)
+export {
+  ApiKeyScope,
+  InAppAgentConversationVisibilityScope,
+  Role,
+  ScoreConfigDataType,
+  AnnotationQueueStatus,
+  AnnotationQueueObjectType,
+  DatasetStatus,
+  CommentObjectType,
+  NotificationChannel,
+  NotificationType,
+  AuditLogRecordType,
+  EvalTemplateType,
+  EvalTemplateSourceCodeLanguage,
+  JobType,
+  JobConfigState,
+  EvaluatorBlockReason,
+  JobExecutionStatus,
+  DashboardWidgetViews,
+  DashboardWidgetChartType,
+  MonitorThresholdOperator,
+  MonitorView,
+  MonitorSeverity,
+  MonitorStatus,
+  BlobStorageIntegrationFileType,
+  BlobStorageIntegrationType,
+  BlobStorageExportMode,
+  AnalyticsIntegrationExportSource,
+  ActionType,
+  ActionExecutionStatus,
+  SurveyName,
+} from "./prisma-enums";
 export * from "./server/repositories/types";
 
 // metadata conversion

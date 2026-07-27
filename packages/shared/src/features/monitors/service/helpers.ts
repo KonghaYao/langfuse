@@ -3,12 +3,11 @@
  * but intentionally not re-exported from the service barrel — internal
  * implementation detail of the service. */
 import { createHash } from "node:crypto";
+import { type Monitor as PrismaMonitor, Prisma } from "@prisma/client";
 import {
-  type Monitor as PrismaMonitor,
   MonitorView as PrismaMonitorView,
   MonitorSeverity as PrismaMonitorSeverity,
-  Prisma,
-} from "@prisma/client";
+} from "../../../prisma-enums";
 
 import { DAY, HOUR, MINUTE, WEEK } from "../helpers";
 import {

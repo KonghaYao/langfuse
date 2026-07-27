@@ -1,6 +1,9 @@
 import { type ColumnDefinition } from "./types";
 import { ScoreSourceArray, ScoreDataTypeArray } from "../domain/scores";
 
+// Lightweight check to avoid importing heavy server modules into client bundle
+const isLite = process.env.LANGFUSE_MODE === "lite";
+
 export const scoresTableCols: ColumnDefinition[] = [
   {
     name: "Trace ID",
@@ -45,14 +48,14 @@ export const scoresTableCols: ColumnDefinition[] = [
     name: "Source",
     id: "source",
     type: "stringOptions",
-    internal: 's."source"::text',
+    internal: isLite ? 's."source"' : 's."source"::text',
     options: ScoreSourceArray.map((value) => ({ value })),
   },
   {
     name: "Data Type",
     id: "dataType",
     type: "stringOptions",
-    internal: 's."data_type"::text',
+    internal: isLite ? 's."data_type"' : 's."data_type"::text',
     options: ScoreDataTypeArray.map((value) => ({ value })),
   },
   {

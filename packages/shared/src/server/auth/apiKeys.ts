@@ -1,4 +1,5 @@
-import { PrismaClient, ApiKeyScope } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
+import { ApiKeyScope } from "../../prisma-enums";
 import { compare, hash } from "bcryptjs";
 import { randomUUID } from "crypto";
 import * as crypto from "crypto";

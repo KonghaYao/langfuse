@@ -49,7 +49,7 @@ import { logger } from "../logger";
 import { traceException } from "../instrumentation";
 import { prisma } from "../../db";
 import { isLiteMode } from "../adapters";
-import { liteGetTraceById, liteHasAnyTrace, liteGetTracesIdentifierForSession } from "./lite-queries";
+import { liteGetTraceById, liteHasAnyTrace, liteGetTracesIdentifierForSession, liteGetTracesTable, liteGetTracesTableCount } from "./lite-queries";
 
 /**
  * Checks if trace exists in clickhouse.
@@ -1909,6 +1909,32 @@ export const generateTracesForPublicApi = async ({
   pagination?: { limit: number; page: number };
   fields?: TraceFieldGroup[];
 }) => {
+  // Lite mode: use SQLite queries
+  if (isLiteMode()) {
+    const rows = await liteGetTracesTable({
+      projectId,
+      limit: pagination?.limit ?? 50,
+      page: pagination ? pagination.page - 1 : 0,
+      orderBy: orderBy?.[0]
+        ? { column: orderBy[0].column, order: orderBy[0].order }
+        : undefined,
+    });
+    // Convert to domain format expected by public API
+    return rows.map((row) => ({
+      ...row,
+      input: null,
+      output: null,
+      metadata: {},
+      createdAt: row.timestamp,
+      updatedAt: row.timestamp,
+      htmlPath: `/project/${projectId}/traces/${row.id}`,
+      observations: [],
+      scores: [],
+      totalCost: 0,
+      latency: 0,
+    }));
+  }
+
   const requestedFields = fields ?? TRACE_FIELD_GROUPS;
   const includeIO = requestedFields.includes("io");
   const includeScores = requestedFields.includes("scores");
@@ -1957,6 +1983,11 @@ export const getTracesCountForPublicApi = async ({
   filter: FilterList;
   pagination?: { limit: number; page: number };
 }) => {
+  // Lite mode: use SQLite count
+  if (isLiteMode()) {
+    return liteGetTracesTableCount(projectId);
+  }
+
   const appliedFilter = filter.apply();
 
   const needsComplexQuery = filter.some(

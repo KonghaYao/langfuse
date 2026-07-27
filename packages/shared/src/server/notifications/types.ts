@@ -1,4 +1,4 @@
-import { EvaluatorBlockReason } from "@prisma/client";
+import { EvaluatorBlockReason } from "../../prisma-enums";
 import { z } from "zod";
 
 import {

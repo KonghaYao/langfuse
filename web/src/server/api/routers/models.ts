@@ -19,6 +19,8 @@ import {
   queryClickhouse,
   findModel,
   matchPricingTier,
+  isLiteMode,
+  ilike,
 } from "@langfuse/shared/src/server";
 import { TRPCError } from "@trpc/server";
 
@@ -44,6 +46,44 @@ export const modelRouter = createTRPCRouter({
   getById: protectedProjectProcedure
     .input(z.object({ projectId: z.string(), modelId: z.string() }))
     .query(async ({ input, ctx }) => {
+      if (isLiteMode()) {
+        const m = await ctx.prisma.model.findFirst({
+          where: {
+            id: input.modelId,
+            OR: [{ projectId: null }, { projectId: input.projectId }],
+          },
+          include: {
+            pricingTiers: {
+              include: { prices: true },
+              orderBy: { priority: "asc" },
+            },
+          },
+        });
+        if (!m || (m.projectId && m.projectId !== input.projectId)) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Model not found" });
+        }
+        return {
+          id: m.id,
+          projectId: m.projectId,
+          modelName: m.modelName,
+          matchPattern: m.matchPattern,
+          tokenizerConfig: m.tokenizerConfig
+            ? JSON.parse(m.tokenizerConfig)
+            : null,
+          tokenizerId: m.tokenizerId,
+          pricingTiers: m.pricingTiers.map((pt) => ({
+            id: pt.id,
+            name: pt.name,
+            isDefault: pt.isDefault,
+            priority: pt.priority,
+            conditions: JSON.parse(pt.conditions || "[]"),
+            prices: Object.fromEntries(
+              pt.prices.map((p) => [p.usageType, Number(p.price)]),
+            ),
+          })),
+        };
+      }
+
       const modelQueryResult = await ctx.prisma.$queryRaw`
           SELECT
             m.id,
@@ -109,6 +149,61 @@ export const modelRouter = createTRPCRouter({
     .input(ModelAllOptions)
     .query(async ({ input, ctx }) => {
       const { projectId, page, limit, searchString } = input;
+
+      if (isLiteMode()) {
+        // SQLite-compatible: use Prisma query builder
+        const models = await ctx.prisma.model.findMany({
+          where: {
+            OR: [{ projectId: null }, { projectId }],
+            ...(searchString
+              ? { modelName: { contains: searchString } }
+              : {}),
+          },
+          include: {
+            pricingTiers: {
+              include: { prices: true },
+              orderBy: { priority: "asc" },
+            },
+          },
+          orderBy: [{ projectId: "asc" }, { modelName: "asc" }],
+        });
+
+        // Deduplicate by (projectId, modelName) keeping most recent
+        const seen = new Map<string, (typeof models)[0]>();
+        for (const m of models) {
+          const key = `${m.projectId ?? "null"}:${m.modelName}`;
+          const existing = seen.get(key);
+          if (!existing || m.createdAt > existing.createdAt) {
+            seen.set(key, m);
+          }
+        }
+
+        const allModels = Array.from(seen.values()).map((m) => ({
+          id: m.id,
+          projectId: m.projectId,
+          modelName: m.modelName,
+          matchPattern: m.matchPattern,
+          tokenizerConfig: m.tokenizerConfig
+            ? JSON.parse(m.tokenizerConfig)
+            : null,
+          tokenizerId: m.tokenizerId,
+          pricingTiers: m.pricingTiers.map((pt) => ({
+            id: pt.id,
+            name: pt.name,
+            isDefault: pt.isDefault,
+            priority: pt.priority,
+            conditions: JSON.parse(pt.conditions || "[]"),
+            prices: Object.fromEntries(
+              pt.prices.map((p) => [p.usageType, Number(p.price)]),
+            ),
+          })),
+        }));
+
+        return {
+          models: paginateArray({ data: allModels, page, limit }),
+          totalCount: allModels.length,
+        };
+      }
 
       const searchStringTemplate = `%${searchString}%`;
       const searchStringCondition = searchString

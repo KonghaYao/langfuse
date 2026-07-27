@@ -51,7 +51,7 @@ const createPrismaInstance = () => {
 
   if (env.NODE_ENV === "development") {
     client.$on("query", (event) => {
-      logger.info(`prisma:query ${event.query}, ${event.duration}ms`);
+      logger.debug(`prisma:query ${event.query}, ${event.duration}ms`);
     });
   }
 
@@ -78,3 +78,36 @@ export const prisma =
   globalThis.prismaGlobal ?? PrismaClientSingleton.getInstance();
 
 export * from "@prisma/client";
+// Enum compat: explicit exports override star-export above (SQLite has no enums)
+export {
+  ApiKeyScope,
+  InAppAgentConversationVisibilityScope,
+  Role,
+  ScoreConfigDataType,
+  AnnotationQueueStatus,
+  AnnotationQueueObjectType,
+  DatasetStatus,
+  CommentObjectType,
+  NotificationChannel,
+  NotificationType,
+  AuditLogRecordType,
+  EvalTemplateType,
+  EvalTemplateSourceCodeLanguage,
+  JobType,
+  JobConfigState,
+  EvaluatorBlockReason,
+  JobExecutionStatus,
+  DashboardWidgetViews,
+  DashboardWidgetChartType,
+  MonitorThresholdOperator,
+  MonitorView,
+  MonitorSeverity,
+  MonitorStatus,
+  BlobStorageIntegrationFileType,
+  BlobStorageIntegrationType,
+  BlobStorageExportMode,
+  AnalyticsIntegrationExportSource,
+  ActionType,
+  ActionExecutionStatus,
+  SurveyName,
+} from "./prisma-enums";

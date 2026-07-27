@@ -1,5 +1,5 @@
 import { Job, Processor } from "bullmq";
-import { EvalTemplateType, JobExecutionStatus } from "@prisma/client";
+import { EvalTemplateType, JobExecutionStatus } from "@langfuse/shared";
 import { prisma } from "@langfuse/shared/src/db";
 import {
   CodeEvalExecutionError,

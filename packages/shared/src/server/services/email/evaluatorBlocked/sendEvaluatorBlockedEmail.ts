@@ -1,6 +1,6 @@
 import { render } from "@react-email/render";
 import { createMailTransport } from "../transport";
-import { EvaluatorBlockReason } from "@prisma/client";
+import { EvaluatorBlockReason } from "../../../../prisma-enums";
 import { z } from "zod";
 import { sanitizeEmailSubject } from "../../../../utils/zod";
 import { logger } from "../../../logger";

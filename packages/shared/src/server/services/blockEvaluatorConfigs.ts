@@ -1,4 +1,5 @@
-import { EvaluatorBlockReason, JobConfigState, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import { EvaluatorBlockReason, JobConfigState } from "../../prisma-enums";
 import { prisma } from "../../db";
 import { env } from "../../env";
 import {

@@ -7,6 +7,7 @@ import {
   getObservationCountsByProjectInCreationInterval,
   getScoreCountsByProjectInCreationInterval,
   getTraceCountsByProjectInCreationInterval,
+  isLiteMode,
   logger,
 } from "@langfuse/shared/src/server";
 import { env } from "@/src/env.mjs";
@@ -238,16 +239,27 @@ async function posthogTelemetry({
     );
 
     // Domains (no PII)
-    const domains = await prisma.$queryRaw<Array<{ domain: string }>>`
-      SELECT
-        substring(email FROM position('@' in email) + 1) as domain,
-        count(id)::int as "userCount"
-      FROM users
-      WHERE email ILIKE '%@%'
-      GROUP BY 1
-      ORDER BY count(id) desc
-      LIMIT 30
-    `;
+    const domains = isLiteMode()
+      ? await prisma.$queryRaw<Array<{ domain: string }>>`
+          SELECT
+            substr(email, instr(email, '@') + 1) as domain,
+            count(id) as "userCount"
+          FROM users
+          WHERE email LIKE '%@%'
+          GROUP BY 1
+          ORDER BY count(id) desc
+          LIMIT 30
+        `
+      : await prisma.$queryRaw<Array<{ domain: string }>>`
+          SELECT
+            substring(email FROM position('@' in email) + 1) as domain,
+            count(id)::int as "userCount"
+          FROM users
+          WHERE email ILIKE '%@%'
+          GROUP BY 1
+          ORDER BY count(id) desc
+          LIMIT 30
+        `;
 
     posthog.capture({
       distinctId: "docker:" + clientId,

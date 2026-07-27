@@ -1,4 +1,4 @@
-import { DatasetStatus } from "@prisma/client";
+import { DatasetStatus } from "../../prisma-enums";
 import { ColumnDefinition } from "../../tableDefinitions";
 
 export const datasetItemsFilterCols: ColumnDefinition[] = [

@@ -4,6 +4,7 @@ import {
   LangfuseNotFoundError,
 } from "@langfuse/shared";
 import { Prisma, prisma } from "@langfuse/shared/src/db";
+import { isLiteMode } from "@langfuse/shared/src/server";
 import type {
   EvaluationRuleEvaluatorFamilyReference,
   PrismaClientLike,
@@ -138,30 +139,52 @@ export async function listPublicEvaluatorTemplates(params: {
 }) {
   const offset = (params.page - 1) * params.limit;
   const [evaluatorRows, totalItemsRes] = await Promise.all([
-    prisma.$queryRaw<Array<{ id: string }>>(
-      Prisma.sql`
-        WITH latest_templates AS (
-          SELECT DISTINCT ON (project_id, name, type)
-            id,
-            project_id,
-            name,
-            type,
-            updated_at
-          FROM eval_templates
-          WHERE (project_id = ${params.projectId} OR project_id IS NULL)
-          ORDER BY project_id, name, type, version DESC
+    isLiteMode()
+      ? prisma.$queryRaw<Array<{ id: string }>>(
+          Prisma.sql`
+            WITH latest_versions AS (
+              SELECT project_id, name, type, MAX(version) as max_version
+              FROM eval_templates
+              WHERE (project_id = ${params.projectId} OR project_id IS NULL)
+              GROUP BY project_id, name, type
+            )
+            SELECT et.id
+            FROM eval_templates et
+            INNER JOIN latest_versions lv
+              ON et.project_id = lv.project_id AND et.name = lv.name AND et.type = lv.type AND et.version = lv.max_version
+            ORDER BY
+              CASE WHEN et.project_id IS NULL THEN 1 ELSE 0 END ASC,
+              et.name ASC,
+              et.updated_at DESC,
+              et.id ASC
+            LIMIT ${params.limit}
+            OFFSET ${offset}
+          `,
         )
-        SELECT id
-        FROM latest_templates
-        ORDER BY
-          CASE WHEN project_id IS NULL THEN 1 ELSE 0 END ASC,
-          name ASC,
-          updated_at DESC,
-          id ASC
-        LIMIT ${params.limit}
-        OFFSET ${offset}
-      `,
-    ),
+      : prisma.$queryRaw<Array<{ id: string }>>(
+          Prisma.sql`
+            WITH latest_templates AS (
+              SELECT DISTINCT ON (project_id, name, type)
+                id,
+                project_id,
+                name,
+                type,
+                updated_at
+              FROM eval_templates
+              WHERE (project_id = ${params.projectId} OR project_id IS NULL)
+              ORDER BY project_id, name, type, version DESC
+            )
+            SELECT id
+            FROM latest_templates
+            ORDER BY
+              CASE WHEN project_id IS NULL THEN 1 ELSE 0 END ASC,
+              name ASC,
+              updated_at DESC,
+              id ASC
+            LIMIT ${params.limit}
+            OFFSET ${offset}
+          `,
+        ),
     prisma.$queryRaw<Array<{ count: bigint }>>(
       Prisma.sql`
         SELECT COUNT(*) as count

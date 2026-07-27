@@ -89,6 +89,8 @@ import {
   WEBHOOK_URL_VALIDATION_LOG_CONTEXT,
   deleteDatasetsByIds,
   findDatasetsForDeletion,
+  ilike,
+  isLiteMode,
 } from "@langfuse/shared/src/server";
 import { aggregateScores } from "@/src/features/scores/lib/aggregateScores";
 import {
@@ -158,7 +160,7 @@ const resolveSearchCondition = (searchQuery?: string | null) => {
   if (!searchQuery || searchQuery.trim() === "") return Prisma.empty;
 
   // Add case-insensitive search condition
-  return Prisma.sql`AND d.name ILIKE ${`%${searchQuery}%`}`;
+  return Prisma.sql`AND d.name ${ilike()} ${`%${searchQuery}%`}`;
 };
 
 const buildPathPrefixFilter = (pathPrefix?: string): Prisma.Sql => {
@@ -222,6 +224,27 @@ const generateDatasetQuery = ({
   limit = 1,
   page = 0,
 }: GenerateDatasetQueryInput) => {
+  // Lite mode: simplified flat query without folder grouping (SQLite-compatible)
+  if (isLiteMode()) {
+    const nameFilter = pathPrefix
+      ? Prisma.sql`AND d.name LIKE ${`${pathPrefix}/%`}`
+      : Prisma.empty;
+    return Prisma.sql`
+      WITH filtered_datasets AS (
+        SELECT d.*
+        FROM datasets d
+        WHERE d.project_id = ${projectId}
+          ${pathFilter}
+          ${searchFilter}
+          ${nameFilter}
+      )
+      SELECT ${select}, 'dataset' as row_type
+      FROM filtered_datasets d
+      ${orderCondition}
+      LIMIT ${limit} OFFSET ${page * limit}
+    `;
+  }
+
   // CTE to get datasets for given project (same for root and folder queries)
   const datasetsCTE = Prisma.sql`
   filtered_datasets AS (

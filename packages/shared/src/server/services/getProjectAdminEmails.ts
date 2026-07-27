@@ -1,4 +1,4 @@
-import { Role } from "@prisma/client";
+import { Role } from "../../prisma-enums";
 import { prisma } from "../../db";
 
 export async function getProjectAdminEmails(

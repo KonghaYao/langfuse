@@ -32,6 +32,7 @@ import { orderedRoles } from "@/src/features/rbac/constants/orderedRoles";
 import {
   getUserProjectRoles,
   getUserProjectRolesCount,
+  ilike,
 } from "@langfuse/shared/src/server";
 
 function buildUserSearchFilter(searchQuery: string | undefined | null) {
@@ -42,8 +43,8 @@ function buildUserSearchFilter(searchQuery: string | undefined | null) {
   const q = searchQuery;
   const searchConditions: Prisma.Sql[] = [];
 
-  searchConditions.push(Prisma.sql`u.name ILIKE ${`%${q}%`}`);
-  searchConditions.push(Prisma.sql`u.email ILIKE ${`%${q}%`}`);
+  searchConditions.push(Prisma.sql`u.name ${ilike()} ${`%${q}%`}`);
+  searchConditions.push(Prisma.sql`u.email ${ilike()} ${`%${q}%`}`);
 
   return searchConditions.length > 0
     ? Prisma.sql` AND (${Prisma.join(searchConditions, " OR ")})`

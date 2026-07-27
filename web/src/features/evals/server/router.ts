@@ -44,6 +44,8 @@ import {
   tableColumnsToSqlFilterAndPrefix,
   orderByToPrismaSql,
   invalidateProjectEvalConfigCaches,
+  isLiteMode,
+  ilike,
 } from "@langfuse/shared/src/server";
 import { TRPCError } from "@trpc/server";
 import { EvaluatorStatus } from "../types";
@@ -244,7 +246,16 @@ const getCodeEvalTemplateRawSqlCondition = () => {
   const supportedLanguages = getSupportedCodeEvalTemplateLanguages();
 
   if (supportedLanguages.length === 0) {
-    return Prisma.sql`AND type != ${EvalTemplateType.CODE}::"EvalTemplateType"`;
+    return isLiteMode()
+      ? Prisma.sql`AND type != ${EvalTemplateType.CODE}`
+      : Prisma.sql`AND type != ${EvalTemplateType.CODE}::"EvalTemplateType"`;
+  }
+
+  if (isLiteMode()) {
+    const supportedLanguageSql = Prisma.join(
+      supportedLanguages.map((language) => Prisma.sql`${language}`),
+    );
+    return Prisma.sql`AND (type != ${EvalTemplateType.CODE} OR source_code_language IN (${supportedLanguageSql}))`;
   }
 
   const supportedLanguageSql = Prisma.join(
@@ -529,7 +540,7 @@ export const evalRouter = createTRPCRouter({
 
       const searchCondition =
         input.searchQuery && input.searchQuery.trim() !== ""
-          ? Prisma.sql`AND jc.score_name ILIKE ${`%${input.searchQuery}%`}`
+          ? Prisma.sql`AND jc.score_name ${ilike()} ${`%${input.searchQuery}%`}`
           : Prisma.empty;
 
       const [configs, configsCount] = await Promise.all([
@@ -698,27 +709,81 @@ export const evalRouter = createTRPCRouter({
 
       const searchCondition =
         input.searchQuery && input.searchQuery.trim() !== ""
-          ? Prisma.sql`AND name ILIKE ${`%${input.searchQuery}%`}`
+          ? Prisma.sql`AND name ${ilike()} ${`%${input.searchQuery}%`}`
           : Prisma.empty;
       const typeCondition = getCodeEvalTemplateRawSqlCondition();
 
       const [templates, count] = await Promise.all([
-        ctx.prisma.$queryRaw<
-          Array<{
-            latestId: string;
-            name: string;
-            projectId: string;
-            version: number;
-            latestCreatedAt: Date;
-            usageCount: number;
-            partner?: string;
-            provider?: string;
-            model?: string;
-            type: EvalTemplateType;
-            sourceCodeLanguage: EvalTemplateSourceCodeLanguage | null;
-            outputDefinition: unknown;
-          }>
-        >`
+        isLiteMode()
+          ? ctx.prisma.$queryRaw<
+              Array<{
+                latestId: string;
+                name: string;
+                projectId: string;
+                version: number;
+                latestCreatedAt: Date;
+                usageCount: number;
+                partner?: string;
+                provider?: string;
+                model?: string;
+                type: EvalTemplateType;
+                sourceCodeLanguage: EvalTemplateSourceCodeLanguage | null;
+                outputDefinition: unknown;
+              }>
+            >`
+            WITH latest_versions AS (
+              SELECT project_id, name, type, MAX(version) as max_version
+              FROM eval_templates
+              WHERE (project_id = ${input.projectId} OR project_id IS NULL)
+              ${searchCondition}
+              ${typeCondition}
+              GROUP BY project_id, name, type
+            )
+            SELECT
+              et.id as "latestId",
+              et.name,
+              et.provider,
+              et.model,
+              et.type,
+              et.source_code_language as "sourceCodeLanguage",
+              et.partner,
+              et.project_id as "projectId",
+              et.version,
+              et.created_at as "latestCreatedAt",
+              et.output_schema as "outputDefinition",
+              COALESCE((
+                SELECT COUNT(jc.id)
+                FROM job_configurations jc
+                WHERE jc.eval_template_id IN (
+                  SELECT id FROM eval_templates
+                  WHERE name = et.name AND type = et.type AND
+                        (project_id = et.project_id OR (project_id IS NULL AND et.project_id IS NULL))
+                )
+                AND jc.project_id = ${input.projectId}
+              ), 0) as "usageCount"
+            FROM eval_templates et
+            INNER JOIN latest_versions lv
+              ON et.project_id = lv.project_id AND et.name = lv.name AND et.type = lv.type AND et.version = lv.max_version
+            ORDER BY et.project_id, et.partner, et.name, et.type
+            LIMIT ${input.limit}
+            OFFSET ${input.page * input.limit}
+            `
+          : ctx.prisma.$queryRaw<
+              Array<{
+                latestId: string;
+                name: string;
+                projectId: string;
+                version: number;
+                latestCreatedAt: Date;
+                usageCount: number;
+                partner?: string;
+                provider?: string;
+                model?: string;
+                type: EvalTemplateType;
+                sourceCodeLanguage: EvalTemplateSourceCodeLanguage | null;
+                outputDefinition: unknown;
+              }>
+            >`
         WITH latest_templates AS (
           SELECT 
             et.id,
@@ -1909,6 +1974,53 @@ export const evalRouter = createTRPCRouter({
         projectId: input.projectId,
         scope: "evalJob:read",
       });
+
+      if (isLiteMode()) {
+        // SQLite: filter stored as JSON string, do JS-side filtering
+        const configs = await ctx.prisma.jobConfiguration.findMany({
+          where: {
+            projectId: input.projectId,
+            jobType: "EVAL",
+            targetObject: "dataset",
+            status: "ACTIVE",
+          },
+          select: { id: true, scoreName: true, filter: true },
+        });
+
+        const evaluators = configs
+          .filter((jc) => {
+            if (!jc.filter) return true;
+            let filterArr: Array<{
+              column?: string;
+              type?: string;
+              operator?: string;
+              value?: string[];
+            }>;
+            try {
+              filterArr = JSON.parse(jc.filter);
+            } catch {
+              return true;
+            }
+            if (!Array.isArray(filterArr) || filterArr.length === 0)
+              return true;
+            return filterArr.some((f) => {
+              if (
+                f.column !== "Dataset" ||
+                f.type !== "stringOptions" ||
+                !Array.isArray(f.value)
+              )
+                return false;
+              if (f.operator === "any of")
+                return f.value.includes(input.datasetId);
+              if (f.operator === "none of")
+                return !f.value.includes(input.datasetId);
+              return false;
+            });
+          })
+          .map((jc) => ({ id: jc.id, scoreName: jc.scoreName ?? "" }));
+
+        return evaluators;
+      }
 
       // Get all evaluators (jobConfigs) for the project, refactor to reuse filter builder pattern in lfe-2887
       const evaluators = await ctx.prisma.$queryRaw<

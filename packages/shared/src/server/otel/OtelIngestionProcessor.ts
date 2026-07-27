@@ -29,6 +29,7 @@ import { env } from "../../env";
 import { OtelIngestionQueue } from "../redis/otelIngestionQueue";
 import { isValidDateString, flattenJsonToPathArrays } from "./utils";
 import { convertDateToClickhouseDateTime } from "../clickhouse/client";
+import { isLiteMode } from "../adapters";
 
 // Type definitions for internal processor state
 interface TraceState {
@@ -213,8 +214,40 @@ export class OtelIngestionProcessor {
   /**
    * Uploads a batch of resourceSpans to blob storage and adds a job to process them
    * into the otel-ingestion-queue.
+   *
+   * In lite mode, bypasses S3 + queue and processes spans inline via SQLite.
    */
   async publishToOtelIngestionQueue(resourceSpans: ResourceSpan[]) {
+    // Lite mode: process inline without S3/Redis
+    if (isLiteMode()) {
+      const { processEventBatchLite } = await import(
+        "../ingestion/processEventBatchLite.js"
+      );
+      const events = await this.processToIngestionEvents(resourceSpans);
+      if (events.length === 0) {
+        return { successes: [], errors: [] };
+      }
+      return processEventBatchLite(
+        events,
+        {
+          validKey: true,
+          scope: {
+            projectId: this.projectId,
+            accessLevel: "project" as const,
+            orgId: this.orgId,
+          },
+        },
+        {
+          isLangfuseInternal: this.isLangfuseInternal,
+          attribution: {
+            ingestionApiKey: this.publicKey,
+            ingestionSdkName: this.sdkName,
+            ingestionSdkVersion: this.sdkVersion,
+          },
+        },
+      );
+    }
+
     const fileKey = `${env.LANGFUSE_S3_EVENT_UPLOAD_PREFIX}otel/${this.projectId}/${this.getCurrentTimePath()}/${randomUUID()}.json`;
 
     // Upload to S3
@@ -564,7 +597,8 @@ export class OtelIngestionProcessor {
             return events;
           });
       } catch (error) {
-        logger.error("Error processing OTEL spans to events:", {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        logger.error(`Error processing OTEL spans to events: ${errMsg}`, {
           error,
           ...this.getConversionFailureLogContext(resourceSpans),
         });
@@ -644,7 +678,9 @@ export class OtelIngestionProcessor {
           }
 
           // Log error but don't throw to avoid breaking the ingestion pipeline
-          logger.error("Error processing OTEL spans:", {
+          const errMsg =
+            error instanceof Error ? error.message : String(error);
+          logger.error(`Error processing OTEL spans: ${errMsg}`, {
             error,
             ...this.getConversionFailureLogContext(resourceSpans),
           });
@@ -3166,9 +3202,20 @@ export class OtelIngestionProcessor {
   }
 
   private parseId(data: any): string {
+    // Handle undefined/null gracefully
+    if (data == null) {
+      return "";
+    }
+    // Handle object with data property (protobuf format)
+    const actualData = data?.data ?? data;
+    if (actualData == null) {
+      return "";
+    }
     // JS SDK sends IDs already in hex strings
     // Python SDK sends Int array
-    return typeof data === "string" ? data : Buffer.from(data).toString("hex");
+    return typeof actualData === "string"
+      ? actualData
+      : Buffer.from(actualData).toString("hex");
   }
 
   /**

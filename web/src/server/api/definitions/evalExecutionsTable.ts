@@ -1,11 +1,14 @@
 import { type ColumnDefinition, JobExecutionStatus } from "@langfuse/shared";
 
+// Lightweight check to avoid importing heavy server barrel into client bundle
+const isLite = process.env.LANGFUSE_MODE === "lite";
+
 export const evalExecutionsFilterCols: ColumnDefinition[] = [
   {
     name: "Status",
     id: "status",
     type: "stringOptions",
-    internal: 'je."status"::text',
+    internal: isLite ? 'je."status"' : 'je."status"::text',
     options: Object.values(JobExecutionStatus)
       .filter((value) => value !== JobExecutionStatus.CANCELLED)
       .map((value) => ({ value })),
