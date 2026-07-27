@@ -295,6 +295,42 @@ export const processEventBatchLite = async (
   }
   rowsByTable.traces = [...mergedTraces.values()];
 
+  // Propagate input/output from observations to traces that lack them.
+  // Some OTEL SDKs (e.g. peri-agent) only set IO on observation-level spans
+  // (like agent-run) without setting langfuse.trace.input/output attributes.
+  // This makes traces appear "half-recorded" in the UI. We fix this by
+  // inheriting IO from the root observation or its nearest children.
+  const hasIO = (v: unknown): boolean =>
+    v != null && v !== "" && v !== "null" && v !== '""';
+  for (const trace of rowsByTable.traces) {
+    if (hasIO(trace.input) && hasIO(trace.output)) continue;
+    const traceObs = rowsByTable.observations.filter(
+      (o) => o.trace_id === trace.id,
+    );
+    if (traceObs.length === 0) continue;
+    // Prefer the root observation (no parent)
+    const root = traceObs.find(
+      (o) => !o.parent_observation_id || o.parent_observation_id === "",
+    );
+    if (root) {
+      if (!hasIO(trace.input) && hasIO(root.input)) trace.input = root.input;
+      if (!hasIO(trace.output) && hasIO(root.output))
+        trace.output = root.output;
+    }
+    // If still missing, try direct children of the root (or all obs)
+    if (!hasIO(trace.input) || !hasIO(trace.output)) {
+      const children = root
+        ? traceObs.filter((o) => o.parent_observation_id === root.id)
+        : traceObs;
+      for (const child of children) {
+        if (!hasIO(trace.input) && hasIO(child.input)) trace.input = child.input;
+        if (!hasIO(trace.output) && hasIO(child.output))
+          trace.output = child.output;
+        if (hasIO(trace.input) && hasIO(trace.output)) break;
+      }
+    }
+  }
+
   // Write to SQLite
   const db = getTelemetryDB();
   for (const [table, rows] of Object.entries(rowsByTable)) {
