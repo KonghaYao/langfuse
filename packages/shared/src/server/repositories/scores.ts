@@ -76,7 +76,7 @@ import {
   matchesUiColumnMapping,
 } from "../../tableDefinitions";
 import { isLiteMode } from "../adapters";
-import { liteGetScoresForTraces } from "./lite-queries";
+import { liteGetScoresForTraces, liteGetScoresTable, liteGetScoresTableCount, liteGetTraceInfoByIds } from "./lite-queries";
 
 const FILTER_OPTION_SCORE_NAME_LIMIT = 200;
 const FILTER_OPTION_CATEGORICAL_VALUE_LIMIT = 20;
@@ -2771,6 +2771,46 @@ export const _handleGenerateScoresForPublicApi = async ({
   pagination?: { limit: number; page: number };
   apiVersion?: "v1" | "v2";
 }) => {
+  // Lite mode: query SQLite directly.
+  if (isLiteMode()) {
+    const records = pagination
+      ? await liteGetScoresTable(
+          projectId,
+          pagination.limit,
+          pagination.page - 1,
+          scoresFilter,
+        )
+      : await liteGetScoresTable(projectId, 100000, 0, scoresFilter);
+
+    // Enrich with trace attribution info (v1 schema requires a trace object).
+    const traceIds = [
+      ...new Set(
+        records
+          .map((r) => r.trace_id)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const traceInfo = await liteGetTraceInfoByIds(projectId, traceIds);
+
+    return records.map((record) => {
+      const domainScore = convertClickhouseScoreToDomain(
+        record as ScoreRecordReadType,
+      );
+      const info = record.trace_id
+        ? traceInfo.get(record.trace_id)
+        : undefined;
+      return {
+        ...domainScore,
+        trace: {
+          userId: info?.userId ?? null,
+          tags: info?.tags ?? [],
+          environment: info?.environment ?? null,
+          sessionId: info?.sessionId ?? null,
+        },
+      };
+    });
+  }
+
   const appliedScoresFilter = scoresFilter.apply();
   const appliedTracesFilter = tracesFilter.apply();
 
@@ -2892,6 +2932,11 @@ export const _handleGetScoresCountForPublicApi = async ({
   needsTraceJoin: boolean;
   apiVersion?: "v1" | "v2";
 }) => {
+  // Lite mode: count from SQLite directly.
+  if (isLiteMode()) {
+    return liteGetScoresTableCount(projectId, scoresFilter);
+  }
+
   const appliedScoresFilter = scoresFilter.apply();
   const appliedTracesFilter = tracesFilter.apply();
 

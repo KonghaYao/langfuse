@@ -39,6 +39,48 @@ function serializeValue(value: unknown): unknown {
 }
 
 /**
+ * Derive the observation `type` (GENERATION, AGENT, TOOL, ...) from the
+ * ingestion event type. Mirrors the full-mode `getObservationType` in the
+ * worker's IngestionService. The type is encoded in the event type string
+ * (e.g. "agent-create" → "AGENT"), NOT in `body.type` — only the legacy
+ * observation-create/update events carry an explicit `body.type`.
+ */
+function getObservationTypeFromEventType(
+  eventType: string,
+  body: Record<string, unknown>,
+): string {
+  switch (eventType) {
+    case eventTypes.OBSERVATION_CREATE:
+    case eventTypes.OBSERVATION_UPDATE:
+      return ((body.type as string) ?? "SPAN").toUpperCase();
+    case eventTypes.EVENT_CREATE:
+      return "EVENT";
+    case eventTypes.SPAN_CREATE:
+    case eventTypes.SPAN_UPDATE:
+      return "SPAN";
+    case eventTypes.GENERATION_CREATE:
+    case eventTypes.GENERATION_UPDATE:
+      return "GENERATION";
+    case eventTypes.AGENT_CREATE:
+      return "AGENT";
+    case eventTypes.TOOL_CREATE:
+      return "TOOL";
+    case eventTypes.CHAIN_CREATE:
+      return "CHAIN";
+    case eventTypes.RETRIEVER_CREATE:
+      return "RETRIEVER";
+    case eventTypes.EVALUATOR_CREATE:
+      return "EVALUATOR";
+    case eventTypes.EMBEDDING_CREATE:
+      return "EMBEDDING";
+    case eventTypes.GUARDRAIL_CREATE:
+      return "GUARDRAIL";
+    default:
+      return ((body.type as string) ?? "SPAN").toUpperCase();
+  }
+}
+
+/**
  * Convert an ingestion event body to a SQLite row for the given table.
  */
 function eventToRow(
@@ -97,7 +139,7 @@ function eventToRow(
         ...baseRow,
         trace_id: body.traceId ?? null,
         parent_observation_id: body.parentObservationId ?? null,
-        type: (body.type as string)?.toUpperCase() ?? "SPAN",
+        type: getObservationTypeFromEventType(event.type, body),
         name: body.name ?? null,
         start_time: body.startTime
           ? new Date(body.startTime as string)

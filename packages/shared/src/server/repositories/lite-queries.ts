@@ -13,6 +13,7 @@ import type {
   ObservationRecordReadType,
   ScoreRecordReadType,
 } from "./definitions";
+import type { FilterList } from "../queries/clickhouse-sql/clickhouse-filter";
 
 // ============================================================================
 // Helpers
@@ -59,6 +60,234 @@ function toUsageRecord(value: unknown): Record<string, number> {
 }
 
 // ============================================================================
+// FilterList -> SQLite WHERE conversion
+// ============================================================================
+
+/**
+ * Column whitelist per table to avoid SQL injection through filter.field.
+ * Filter `field` values originate from server-side column mappings, but we
+ * still guard against unexpected fields.
+ */
+const LITE_FILTER_COLUMNS: Record<string, Set<string>> = {
+  observations: new Set([
+    "trace_id",
+    "name",
+    "level",
+    "type",
+    "parent_observation_id",
+    "start_time",
+    "end_time",
+    "environment",
+    "version",
+    "id",
+    "model",
+  ]),
+  scores: new Set([
+    "trace_id",
+    "observation_id",
+    "name",
+    "source",
+    "timestamp",
+    "value",
+    "data_type",
+    "config_id",
+    "environment",
+    "id",
+    "author_user_id",
+    "queue_id",
+  ]),
+  traces: new Set([
+    "id",
+    "name",
+    "user_id",
+    "session_id",
+    "environment",
+    "timestamp",
+    "version",
+    "release",
+  ]),
+};
+
+/** Format a Date to SQLite TEXT format matching datetime('now') storage. */
+function toSqliteDateTime(date: Date): string {
+  return date.toISOString().replace("T", " ").replace("Z", "").slice(0, 23);
+}
+
+/** Escape a literal for use inside a SQLite LIKE pattern. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (m) => `\\${m}`);
+}
+
+/**
+ * Convert a FilterList into a SQLite WHERE clause (without the `WHERE` keyword)
+ * plus bound parameters. Supports the filter types used by the public API
+ * observations/scores/traces endpoints. Filters targeting columns that do not
+ * exist on the given table are skipped (they are handled via subqueries or are
+ * not applicable in lite mode).
+ *
+ * The base query is expected to already constrain `project_id` and
+ * `is_deleted = 0`.
+ */
+export function liteBuildFilterWhere(
+  filter: FilterList | undefined,
+  table: "observations" | "scores" | "traces",
+): { clause: string; params: Record<string, unknown> } {
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+  if (!filter || filter.length() === 0) return { clause: "", params };
+
+  const columns = LITE_FILTER_COLUMNS[table];
+  let idx = 0;
+
+  filter.forEach((f) => {
+    const raw = f as unknown as Record<string, unknown>;
+    const field = String(raw.field ?? "");
+    const operator = String(raw.operator ?? "");
+    const clickhouseTable = String(raw.clickhouseTable ?? table);
+
+    // project_id / is_deleted are enforced by the base query.
+    if (field === "project_id" || field === "is_deleted") return;
+
+    // userId on observations lives on the traces table -> subquery.
+    if (table === "observations" && clickhouseTable === "traces" && field === "user_id") {
+      const p = `uf${idx++}`;
+      params[p] = String(raw.value ?? "");
+      conditions.push(
+        `trace_id IN (SELECT id FROM traces WHERE project_id = @projectId AND user_id = @${p})`,
+      );
+      return;
+    }
+
+    // Trace-tag filters on scores -> match the JSON tags array on traces.
+    if (table === "scores" && clickhouseTable === "traces" && field === "tags") {
+      const values = Array.isArray(raw.values) ? (raw.values as unknown[]) : [];
+      if (values.length === 0) return;
+      const ors = values.map((v) => {
+        const p = `tag${idx++}`;
+        params[p] = `%"${escapeLike(String(v))}"%`;
+        return `t.tags LIKE @${p}`;
+      });
+      conditions.push(
+        `trace_id IN (SELECT t.id FROM traces t WHERE t.project_id = @projectId AND (${ors.join(" OR ")}))`,
+      );
+      return;
+    }
+
+    // Tags filter directly on the traces table (JSON array column).
+    if (table === "traces" && field === "tags" && Array.isArray(raw.values)) {
+      const values = (raw.values as unknown[]).map((v) => String(v));
+      if (values.length === 0) return;
+      if (operator === "none of") {
+        const ands = values.map((v) => {
+          const p = `tag${idx++}`;
+          params[p] = `%"${escapeLike(v)}"%`;
+          return `tags NOT LIKE @${p}`;
+        });
+        conditions.push(ands.join(" AND "));
+      } else {
+        // "any of" / "all of" — for all of, require every value present.
+        const parts = values.map((v) => {
+          const p = `tag${idx++}`;
+          params[p] = `%"${escapeLike(v)}"%`;
+          return `tags LIKE @${p}`;
+        });
+        conditions.push(
+          operator === "all of" ? parts.join(" AND ") : `(${parts.join(" OR ")})`,
+        );
+      }
+      return;
+    }
+
+    // userId on scores lives on traces -> subquery.
+    if (table === "scores" && clickhouseTable === "traces" && field === "user_id") {
+      const p = `uf${idx++}`;
+      params[p] = String(raw.value ?? "");
+      conditions.push(
+        `trace_id IN (SELECT id FROM traces WHERE project_id = @projectId AND user_id = @${p})`,
+      );
+      return;
+    }
+
+    // Only handle filters whose column exists on the target table.
+    if (clickhouseTable !== table && clickhouseTable !== "") return;
+    if (!columns.has(field)) return;
+
+    const col = field;
+
+    // String options filter (any of / none of)
+    if (Array.isArray(raw.values)) {
+      const values = (raw.values as unknown[]).map((v) => String(v));
+      if (values.length === 0) return;
+      const placeholders = values.map((v) => {
+        const p = `opt${idx++}`;
+        params[p] = v;
+        return `@${p}`;
+      });
+      if (operator === "none of") {
+        conditions.push(`${col} NOT IN (${placeholders.join(",")})`);
+      } else {
+        conditions.push(`${col} IN (${placeholders.join(",")})`);
+      }
+      return;
+    }
+
+    // DateTime filter
+    if (raw.value instanceof Date) {
+      const p = `dt${idx++}`;
+      params[p] = toSqliteDateTime(raw.value as Date);
+      conditions.push(`${col} ${operator} @${p}`);
+      return;
+    }
+
+    // Number filter
+    if (typeof raw.value === "number") {
+      const p = `num${idx++}`;
+      params[p] = raw.value;
+      conditions.push(`${col} ${operator} @${p}`);
+      return;
+    }
+
+    // String filter
+    if (typeof raw.value === "string") {
+      const value = raw.value as string;
+      const p = `str${idx++}`;
+      switch (operator) {
+        case "=":
+          params[p] = value;
+          conditions.push(`${col} = @${p}`);
+          break;
+        case "!=":
+          params[p] = value;
+          conditions.push(`${col} != @${p}`);
+          break;
+        case "contains":
+          params[p] = `%${escapeLike(value)}%`;
+          conditions.push(`${col} LIKE @${p}`);
+          break;
+        case "does not contain":
+          params[p] = `%${escapeLike(value)}%`;
+          conditions.push(`${col} NOT LIKE @${p}`);
+          break;
+        case "starts with":
+          params[p] = `${escapeLike(value)}%`;
+          conditions.push(`${col} LIKE @${p}`);
+          break;
+        case "ends with":
+          params[p] = `%${escapeLike(value)}`;
+          conditions.push(`${col} LIKE @${p}`);
+          break;
+        default:
+          params[p] = value;
+          conditions.push(`${col} = @${p}`);
+      }
+      return;
+    }
+  });
+
+  return { clause: conditions.length > 0 ? conditions.join(" AND ") : "", params };
+}
+
+// ============================================================================
 // Trace Queries
 // ============================================================================
 
@@ -68,6 +297,7 @@ export interface LiteTracesTableOpts {
   page?: number;
   searchQuery?: string;
   orderBy?: { column: string; order: "ASC" | "DESC" } | null;
+  filter?: FilterList;
 }
 
 export interface LiteTraceRow {
@@ -92,7 +322,7 @@ export async function liteGetTracesTable(
   opts: LiteTracesTableOpts,
 ): Promise<LiteTraceRow[]> {
   const db = getTelemetryDB();
-  const { projectId, limit = 50, page = 0, searchQuery, orderBy } = opts;
+  const { projectId, limit = 50, page = 0, searchQuery, orderBy, filter } = opts;
 
   let whereClause = "WHERE project_id = @projectId AND is_deleted = 0";
   const params: Record<string, unknown> = { projectId };
@@ -100,6 +330,16 @@ export async function liteGetTracesTable(
   if (searchQuery) {
     whereClause += " AND (id LIKE @search OR name LIKE @search)";
     params.search = `%${searchQuery}%`;
+  }
+
+  // Apply FilterList conditions
+  const { clause: filterClause, params: filterParams } = liteBuildFilterWhere(
+    filter,
+    "traces",
+  );
+  if (filterClause) {
+    whereClause += ` AND ${filterClause}`;
+    Object.assign(params, filterParams);
   }
 
   // Map orderBy column to SQLite column
@@ -158,6 +398,7 @@ export async function liteGetTracesTable(
 export async function liteGetTracesTableCount(
   projectId: string,
   searchQuery?: string,
+  filter?: FilterList,
 ): Promise<number> {
   const db = getTelemetryDB();
 
@@ -167,6 +408,15 @@ export async function liteGetTracesTableCount(
   if (searchQuery) {
     whereClause += " AND (id LIKE @search OR name LIKE @search)";
     params.search = `%${searchQuery}%`;
+  }
+
+  const { clause: filterClause, params: filterParams } = liteBuildFilterWhere(
+    filter,
+    "traces",
+  );
+  if (filterClause) {
+    whereClause += ` AND ${filterClause}`;
+    Object.assign(params, filterParams);
   }
 
   try {
@@ -660,19 +910,25 @@ export async function liteGetObservationsTable(
   projectId: string,
   limit = 50,
   page = 0,
+  filter?: FilterList,
 ): Promise<ObservationRecordReadType[]> {
   const db = getTelemetryDB();
   const offset = limit * page;
+  const { clause, params: filterParams } = liteBuildFilterWhere(
+    filter,
+    "observations",
+  );
 
   try {
     const rows = await db.query<Record<string, unknown>>({
       query: `
         SELECT * FROM observations
         WHERE project_id = @projectId AND is_deleted = 0
+        ${clause ? `AND ${clause}` : ""}
         ORDER BY start_time DESC
         LIMIT @limit OFFSET @offset
       `,
-      params: { projectId, limit, offset },
+      params: { projectId, limit, offset, ...filterParams },
     });
 
     return rows.map((row) => ({
@@ -691,9 +947,7 @@ export async function liteGetObservationsTable(
       version: row.version ? String(row.version) : null,
       input: row.input ? String(row.input) : null,
       output: row.output ? String(row.output) : null,
-      provided_model_name: row.provided_model_name
-        ? String(row.provided_model_name)
-        : null,
+      provided_model_name: row.model ? String(row.model) : null,
       internal_model_id: null,
       model_parameters: row.model_parameters
         ? String(row.model_parameters)
@@ -724,6 +978,35 @@ export async function liteGetObservationsTable(
   } catch (error) {
     logger.error("[liteGetObservationsTable] Query failed", error);
     return [];
+  }
+}
+
+/**
+ * Get observations count with optional filtering (for public API pagination).
+ */
+export async function liteGetObservationsTableCount(
+  projectId: string,
+  filter?: FilterList,
+): Promise<number> {
+  const db = getTelemetryDB();
+  const { clause, params: filterParams } = liteBuildFilterWhere(
+    filter,
+    "observations",
+  );
+
+  try {
+    const rows = await db.query<{ count: number }>({
+      query: `
+        SELECT COUNT(*) as count FROM observations
+        WHERE project_id = @projectId AND is_deleted = 0
+        ${clause ? `AND ${clause}` : ""}
+      `,
+      params: { projectId, ...filterParams },
+    });
+    return rows.length > 0 ? Number(rows[0].count) : 0;
+  } catch (error) {
+    logger.error("[liteGetObservationsTableCount] Query failed", error);
+    return 0;
   }
 }
 
@@ -784,19 +1067,25 @@ export async function liteGetScoresTable(
   projectId: string,
   limit = 50,
   page = 0,
+  filter?: FilterList,
 ): Promise<ScoreRecordReadType[]> {
   const db = getTelemetryDB();
   const offset = limit * page;
+  const { clause, params: filterParams } = liteBuildFilterWhere(
+    filter,
+    "scores",
+  );
 
   try {
     const rows = await db.query<Record<string, unknown>>({
       query: `
         SELECT * FROM scores
         WHERE project_id = @projectId AND is_deleted = 0
+        ${clause ? `AND ${clause}` : ""}
         ORDER BY timestamp DESC
         LIMIT @limit OFFSET @offset
       `,
-      params: { projectId, limit, offset },
+      params: { projectId, limit, offset, ...filterParams },
     });
 
     return rows.map((row) => ({
@@ -828,6 +1117,95 @@ export async function liteGetScoresTable(
   } catch (error) {
     logger.error("[liteGetScoresTable] Query failed", error);
     return [];
+  }
+}
+
+/**
+ * Get trace attribution info (userId/tags/environment/sessionId) for a set of
+ * trace IDs. Used to enrich lite-mode public API score responses.
+ */
+export async function liteGetTraceInfoByIds(
+  projectId: string,
+  traceIds: string[],
+): Promise<
+  Map<
+    string,
+    {
+      userId: string | null;
+      tags: string[];
+      environment: string | null;
+      sessionId: string | null;
+    }
+  >
+> {
+  const result = new Map<
+    string,
+    {
+      userId: string | null;
+      tags: string[];
+      environment: string | null;
+      sessionId: string | null;
+    }
+  >();
+  if (traceIds.length === 0) return result;
+  const db = getTelemetryDB();
+
+  try {
+    const placeholders = traceIds.map((_, i) => `@id${i}`).join(",");
+    const params: Record<string, unknown> = { projectId };
+    traceIds.forEach((id, i) => {
+      params[`id${i}`] = id;
+    });
+
+    const rows = await db.query<Record<string, unknown>>({
+      query: `
+        SELECT id, user_id, tags, environment, session_id
+        FROM traces
+        WHERE project_id = @projectId AND id IN (${placeholders}) AND is_deleted = 0
+      `,
+      params,
+    });
+
+    for (const row of rows) {
+      result.set(String(row.id), {
+        userId: row.user_id ? String(row.user_id) : null,
+        tags: safeJsonParse<string[]>(row.tags, []),
+        environment: row.environment ? String(row.environment) : null,
+        sessionId: row.session_id ? String(row.session_id) : null,
+      });
+    }
+  } catch (error) {
+    logger.error("[liteGetTraceInfoByIds] Query failed", error);
+  }
+  return result;
+}
+
+/**
+ * Get scores count with optional filtering (for public API pagination).
+ */
+export async function liteGetScoresTableCount(
+  projectId: string,
+  filter?: FilterList,
+): Promise<number> {
+  const db = getTelemetryDB();
+  const { clause, params: filterParams } = liteBuildFilterWhere(
+    filter,
+    "scores",
+  );
+
+  try {
+    const rows = await db.query<{ count: number }>({
+      query: `
+        SELECT COUNT(*) as count FROM scores
+        WHERE project_id = @projectId AND is_deleted = 0
+        ${clause ? `AND ${clause}` : ""}
+      `,
+      params: { projectId, ...filterParams },
+    });
+    return rows.length > 0 ? Number(rows[0].count) : 0;
+  } catch (error) {
+    logger.error("[liteGetScoresTableCount] Query failed", error);
+    return 0;
   }
 }
 

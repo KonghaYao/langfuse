@@ -61,7 +61,7 @@ import { recordDistribution } from "../instrumentation";
 import { DEFAULT_RENDERING_PROPS, RenderingProps } from "../utils/rendering";
 import { shouldSkipObservationsFinal } from "../queries/clickhouse-sql/query-options";
 import { isLiteMode, getTelemetryDB } from "../adapters";
-import { liteGetObservationsForTrace, liteGetObservationsTable, liteGetObservationById } from "./lite-queries";
+import { liteGetObservationsForTrace, liteGetObservationsTable, liteGetObservationsTableCount, liteGetObservationById } from "./lite-queries";
 
 /**
  * Checks if observation exists in clickhouse.
@@ -2068,6 +2068,7 @@ export const generateObservationsForPublicApi = async ({
       projectId,
       pagination.limit,
       pagination.page - 1,
+      filter,
     );
     return records.map((r) => convertObservation({ ...r, metadata: r.metadata ?? {} }));
   }
@@ -2158,12 +2159,7 @@ export const getObservationsCountForPublicApi = async ({
 }) => {
   // Lite mode: return count from SQLite
   if (isLiteMode()) {
-    const db = getTelemetryDB();
-    const rows = await db.query({
-      query: `SELECT COUNT(*) as count FROM observations WHERE project_id = @projectId AND is_deleted = 0`,
-      params: { projectId },
-    });
-    return rows.length > 0 ? Number((rows[0] as { count: number }).count) : 0;
+    return liteGetObservationsTableCount(projectId, filter);
   }
 
   const appliedFilter = filter.apply();

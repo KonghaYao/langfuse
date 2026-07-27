@@ -1918,6 +1918,7 @@ export const generateTracesForPublicApi = async ({
       orderBy: orderBy?.[0]
         ? { column: orderBy[0].column, order: orderBy[0].order }
         : undefined,
+      filter,
     });
     // Convert to domain format expected by public API
     return rows.map((row) => ({
@@ -1985,7 +1986,7 @@ export const getTracesCountForPublicApi = async ({
 }) => {
   // Lite mode: use SQLite count
   if (isLiteMode()) {
-    return liteGetTracesTableCount(projectId);
+    return liteGetTracesTableCount(projectId, undefined, filter);
   }
 
   const appliedFilter = filter.apply();

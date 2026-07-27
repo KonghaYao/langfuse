@@ -224,10 +224,11 @@ export class OtelIngestionProcessor {
         "../ingestion/processEventBatchLite.js"
       );
       const events = await this.processToIngestionEvents(resourceSpans);
+
       if (events.length === 0) {
         return { successes: [], errors: [] };
       }
-      return processEventBatchLite(
+      const result = await processEventBatchLite(
         events,
         {
           validKey: true,
@@ -246,6 +247,8 @@ export class OtelIngestionProcessor {
           },
         },
       );
+
+      return result;
     }
 
     const fileKey = `${env.LANGFUSE_S3_EVENT_UPLOAD_PREFIX}otel/${this.projectId}/${this.getCurrentTimePath()}/${randomUUID()}.json`;
