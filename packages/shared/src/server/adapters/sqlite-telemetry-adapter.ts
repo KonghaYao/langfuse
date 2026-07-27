@@ -220,6 +220,50 @@ export class SQLiteTelemetryAdapter implements TelemetryDBAdapter {
     }
   }
 
+  /**
+   * Insert with field-level merge: on PK conflict, only overwrite columns
+   * whose incoming value is non-null. Preserves existing data for columns
+   * that the new event does not carry.
+   */
+  async mergeInsert<T = Record<string, unknown>>(
+    opts: TelemetryInsertOpts<T>,
+  ): Promise<void> {
+    if (opts.records.length === 0) return;
+
+    const columns = Object.keys(opts.records[0] as Record<string, unknown>);
+    const placeholders = columns.map((c) => `@${c}`).join(", ");
+
+    // Determine PK columns for the ON CONFLICT target
+    const pkColumns =
+      opts.table === "traces" || opts.table === "observations" || opts.table === "scores"
+        ? ["project_id", "id"]
+        : ["id"];
+
+    // Build SET clause: only overwrite when incoming value is non-null
+    const updateCols = columns.filter((c) => !pkColumns.includes(c));
+    const setClauses = updateCols
+      .map((c) => `${c} = CASE WHEN excluded.${c} IS NOT NULL THEN excluded.${c} ELSE ${opts.table}.${c} END`)
+      .join(", ");
+
+    const sql = `INSERT INTO ${opts.table} (${columns.join(", ")}) VALUES (${placeholders}) ON CONFLICT(${pkColumns.join(", ")}) DO UPDATE SET ${setClauses}`;
+
+    try {
+      const stmt = this.db.prepare(sql);
+      const insertMany = this.db.transaction((records: T[]) => {
+        for (const record of records) {
+          stmt.run(record as Record<string, unknown>);
+        }
+      });
+      insertMany(opts.records);
+    } catch (error) {
+      logger.error(
+        `[SQLiteTelemetryAdapter] MergeInsert into ${opts.table} failed`,
+        error,
+      );
+      throw error;
+    }
+  }
+
   async *queryStream<T = Record<string, unknown>>(
     opts: TelemetryQueryOpts,
   ): AsyncGenerator<T> {

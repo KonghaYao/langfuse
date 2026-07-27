@@ -271,15 +271,48 @@ export const processEventBatchLite = async (
     }
   }
 
+  // Merge multiple trace rows for the same traceId (OTEL generates one
+  // trace-create per span that carries trace-level attributes). Later events
+  // override earlier ones on a per-field basis; null/undefined never overwrites
+  // a previously-set value. This mirrors ClickHouse's ReplacingMergeTree
+  // coalesce semantics used in the full ingestion pipeline.
+  const mergedTraces = new Map<string, Record<string, unknown>>();
+  for (const row of rowsByTable.traces) {
+    const id = row.id as string;
+    const existing = mergedTraces.get(id);
+    if (!existing) {
+      mergedTraces.set(id, { ...row });
+    } else {
+      for (const [key, value] of Object.entries(row)) {
+        if (value != null && value !== "" && value !== "[]" && value !== "{}") {
+          existing[key] = value;
+        }
+      }
+      // Always advance updated_at / event_ts to the latest event
+      existing.updated_at = row.updated_at;
+      existing.event_ts = row.event_ts;
+    }
+  }
+  rowsByTable.traces = [...mergedTraces.values()];
+
   // Write to SQLite
   const db = getTelemetryDB();
   for (const [table, rows] of Object.entries(rowsByTable)) {
     if (rows.length === 0) continue;
     try {
-      await db.insert({
-        table: table as "traces" | "observations" | "scores",
-        records: rows,
-      });
+      if (table === "traces" && db.mergeInsert) {
+        // Use merge semantics for traces: later events only overwrite
+        // non-null fields, preserving name/userId/tags from earlier events.
+        await db.mergeInsert({
+          table: table as "traces" | "observations" | "scores",
+          records: rows,
+        });
+      } else {
+        await db.insert({
+          table: table as "traces" | "observations" | "scores",
+          records: rows,
+        });
+      }
     } catch (error) {
       logger.error(`[processEventBatchLite] Failed to insert into ${table}`, {
         error: error instanceof Error ? error.message : String(error),

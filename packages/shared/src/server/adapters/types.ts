@@ -60,6 +60,14 @@ export interface TelemetryDBAdapter {
   /** Insert records into a table. */
   insert<T = Record<string, unknown>>(opts: TelemetryInsertOpts<T>): Promise<void>;
 
+  /**
+   * Insert records with field-level merge semantics: on primary-key conflict,
+   * only overwrite columns whose incoming value is non-null. This mirrors
+   * ClickHouse ReplacingMergeTree coalesce behaviour for trace upserts.
+   * Default implementation falls back to plain insert.
+   */
+  mergeInsert?<T = Record<string, unknown>>(opts: TelemetryInsertOpts<T>): Promise<void>;
+
   /** Stream query results row by row. */
   queryStream<T = Record<string, unknown>>(
     opts: TelemetryQueryOpts,
