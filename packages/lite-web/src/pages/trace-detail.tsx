@@ -3,16 +3,12 @@ import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
-  ChevronRight,
-  CircleDot,
   Clock,
   Coins,
   Cpu,
   Layers,
-  MoveHorizontal,
-  Sparkles,
+  ListTree,
   Star,
-  Zap,
 } from "lucide-react";
 
 import { getTrace } from "@/lib/api";
@@ -34,135 +30,9 @@ import {
   LevelBadge,
   ObservationTypeBadge,
 } from "@/components/observation-badges";
+import { buildTree, ObservationNode } from "@/components/observation-tree";
 import { JsonViewer } from "@/components/json-viewer";
 import { ErrorState, LoadingRows } from "@/components/state";
-
-// ---------------------------------------------------------------------------
-// Observation tree construction
-// ---------------------------------------------------------------------------
-
-type TreeNode = {
-  observation: Observation;
-  children: TreeNode[];
-};
-
-/**
- * Builds a forest from the flat observation list using parentObservationId.
- * Children are sorted by startTime; observations whose parent is missing
- * (e.g. filtered out) are treated as roots.
- */
-function buildTree(observations: Observation[]): TreeNode[] {
-  const nodes = new Map<string, TreeNode>();
-  for (const o of observations) {
-    nodes.set(o.id, { observation: o, children: [] });
-  }
-  const roots: TreeNode[] = [];
-  for (const node of nodes.values()) {
-    const parentId = node.observation.parentObservationId;
-    const parent = parentId ? nodes.get(parentId) : undefined;
-    if (parent && parent !== node) {
-      parent.children.push(node);
-    } else {
-      roots.push(node);
-    }
-  }
-  const sortRec = (list: TreeNode[]) => {
-    list.sort((a, b) =>
-      a.observation.startTime.localeCompare(b.observation.startTime),
-    );
-    for (const n of list) sortRec(n.children);
-  };
-  sortRec(roots);
-  return roots;
-}
-
-function typeIcon(type: string) {
-  switch (type) {
-    case "GENERATION":
-      return Sparkles;
-    case "SPAN":
-      return MoveHorizontal;
-    case "EVENT":
-      return Zap;
-    default:
-      return CircleDot;
-  }
-}
-
-function ObservationNode({
-  node,
-  depth,
-  selectedId,
-  onSelect,
-}: {
-  node: TreeNode;
-  depth: number;
-  selectedId: string | null;
-  onSelect: (id: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(true);
-  const { observation: o } = node;
-  const Icon = typeIcon(o.type);
-  const hasChildren = node.children.length > 0;
-  const isSelected = selectedId === o.id;
-
-  return (
-    <div>
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={() => onSelect(o.id)}
-        onKeyDown={(e) => e.key === "Enter" && onSelect(o.id)}
-        className={cn(
-          "group flex w-full cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-sm transition-colors",
-          isSelected
-            ? "bg-accent text-accent-foreground"
-            : "hover:bg-accent/50",
-        )}
-        style={{ paddingLeft: `${depth * 16 + 8}px` }}
-      >
-        {hasChildren ? (
-          <button
-            className="shrink-0 rounded p-0.5 hover:bg-muted"
-            onClick={(e) => {
-              e.stopPropagation();
-              setExpanded((v) => !v);
-            }}
-            aria-label={expanded ? "Collapse" : "Expand"}
-          >
-            <ChevronRight
-              className={cn(
-                "h-3.5 w-3.5 transition-transform",
-                expanded && "rotate-90",
-              )}
-            />
-          </button>
-        ) : (
-          <span className="w-[18px] shrink-0" />
-        )}
-        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <span className="truncate font-medium">
-          {o.name ?? <span className="text-muted-foreground">(unnamed)</span>}
-        </span>
-        <ObservationTypeBadge type={o.type} />
-        {o.level && o.level !== "DEFAULT" && <LevelBadge level={o.level} />}
-        <span className="ml-auto shrink-0 pl-2 font-mono text-[11px] text-muted-foreground">
-          {formatDuration(o.startTime, o.endTime)}
-        </span>
-      </div>
-      {expanded &&
-        node.children.map((child) => (
-          <ObservationNode
-            key={child.observation.id}
-            node={child}
-            depth={depth + 1}
-            selectedId={selectedId}
-            onSelect={onSelect}
-          />
-        ))}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Detail panel
@@ -449,7 +319,7 @@ export function TraceDetailPage() {
                     : "hover:bg-accent/50",
                 )}
               >
-                <Zap className="h-3.5 w-3.5 text-muted-foreground" />
+                <ListTree className="h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400" />
                 <span className="font-medium">
                   {trace.name ?? "trace root"}
                 </span>

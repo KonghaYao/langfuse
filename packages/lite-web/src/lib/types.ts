@@ -263,6 +263,7 @@ export type SessionTrace = {
   completionTokens: number;
   totalTokens: number;
   scores: SessionScore[];
+  observations: Observation[];
 };
 
 export type SessionDetail = {

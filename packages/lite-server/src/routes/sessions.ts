@@ -11,9 +11,10 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { LangfuseNotFoundError } from "@langfuse/shared";
-import { logger } from "@langfuse/shared/src/server";
+import { getObservationsForTrace, logger } from "@langfuse/shared/src/server";
 import { getTelemetryDB } from "@langfuse/shared/src/server/adapters";
 import { authMiddleware, type LiteServerEnv } from "../auth";
+import { transformDbToApiObservation } from "../shaping/observations";
 import {
   aggregateTraceMetrics,
   parseJsonValue,
@@ -351,6 +352,32 @@ app.get("/api/public/sessions/:sessionId", authMiddleware, async (c) => {
     scoresByTrace.set(row.trace_id, list);
   }
 
+  // Full observation shapes per trace (lite mode: one SQLite query per trace)
+  // so the session view can render the merged observation tree. IO is omitted
+  // — the tree only needs structure/type/timing.
+  type ApiObservation = ReturnType<typeof transformDbToApiObservation>;
+  const observationsByTraceId = new Map<string, ApiObservation[]>();
+  await Promise.all(
+    traceIds.map(async (tid) => {
+      const obs = await getObservationsForTrace({
+        traceId: tid,
+        projectId,
+        includeIO: false,
+      });
+      observationsByTraceId.set(
+        tid,
+        obs.map((o) =>
+          transformDbToApiObservation({
+            ...o,
+            inputPrice: null,
+            outputPrice: null,
+            totalPrice: null,
+          }),
+        ),
+      );
+    }),
+  );
+
   const timestamps = traceRows
     .map((t) => toMs(t.timestamp))
     .filter((ms): ms is number => ms !== null)
@@ -401,6 +428,7 @@ app.get("/api/public/sessions/:sessionId", authMiddleware, async (c) => {
         comment: s.comment,
         source: s.source,
       })),
+      observations: observationsByTraceId.get(String(t.id)) ?? [],
     };
   });
 
