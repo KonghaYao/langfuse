@@ -31,6 +31,10 @@
       "import": "./dist/src/server/index.js",
       "require": "./dist/src/server/index.js"
     },
+    "./src/server/adapters": {
+      "import": "./dist/src/server/adapters/index.js",
+      "require": "./dist/src/server/adapters/index.js"
+    },
     "./src/server/auth/apiKeys": {
       "import": "./dist/src/server/auth/apiKeys.js",
       "require": "./dist/src/server/auth/apiKeys.js"

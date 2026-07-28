@@ -49,7 +49,13 @@ import { logger } from "../logger";
 import { traceException } from "../instrumentation";
 import { prisma } from "../../db";
 import { isLiteMode } from "../adapters";
-import { liteGetTraceById, liteHasAnyTrace, liteGetTracesIdentifierForSession, liteGetTracesTable, liteGetTracesTableCount } from "./lite-queries";
+import {
+  liteGetTraceById,
+  liteHasAnyTrace,
+  liteGetTracesIdentifierForSession,
+  liteGetTracesTable,
+  liteGetTracesTableCount,
+} from "./lite-queries";
 
 /**
  * Checks if trace exists in clickhouse.
@@ -1915,8 +1921,8 @@ export const generateTracesForPublicApi = async ({
       projectId,
       limit: pagination?.limit ?? 50,
       page: pagination ? pagination.page - 1 : 0,
-      orderBy: orderBy?.[0]
-        ? { column: orderBy[0].column, order: orderBy[0].order }
+      orderBy: orderBy
+        ? { column: orderBy.column, order: orderBy.order }
         : undefined,
       filter,
     });

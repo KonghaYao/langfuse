@@ -18,7 +18,9 @@ import {
   getTraceById,
   traceException,
   TRACE_FIELD_GROUPS,
+  logger,
 } from "@langfuse/shared/src/server";
+import { getTelemetryDB } from "@langfuse/shared/src/server/adapters";
 import { authMiddleware, type LiteServerEnv } from "../auth";
 import { GetTracesV1Query, GetTraceV1Query } from "../schemas/traces";
 import {
@@ -26,6 +28,10 @@ import {
   getTracesCountForPublicApi,
 } from "../shaping/traces";
 import { transformDbToApiObservation } from "../shaping/observations";
+import {
+  aggregateTraceMetrics,
+  parseJsonValue,
+} from "../shaping/trace-metrics";
 
 const app = new Hono<LiteServerEnv>();
 
@@ -82,6 +88,90 @@ app.get("/api/public/traces", authMiddleware, async (c) => {
       totalPages: Math.ceil(finalCount / query.limit),
     },
   });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/public/traces/metrics?traceIds=a,b,c
+//
+// Lite-mode-only aggregate endpoint backing the lite-web traces table. For the
+// given trace ids it returns per-trace metrics (latency, tokens, cost, level
+// counts, observation count) plus input/output/metadata, computed directly from
+// the SQLite telemetry store (mirrors web's `traces.metrics` tRPC + IO cells).
+// Registered before the `:traceId` route so "metrics" is not matched as an id.
+// ---------------------------------------------------------------------------
+
+app.get("/api/public/traces/metrics", authMiddleware, async (c) => {
+  const auth = c.get("auth");
+  const projectId = auth.scope.projectId;
+
+  const traceIds = (c.req.query("traceIds") ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (traceIds.length === 0) return c.json([]);
+
+  const db = getTelemetryDB();
+  try {
+    const placeholders = traceIds.map((_, i) => `@id${i}`).join(",");
+    const params: Record<string, unknown> = { projectId };
+    traceIds.forEach((id, i) => {
+      params[`id${i}`] = id;
+    });
+
+    const [traceRows, obsRows] = await Promise.all([
+      db.query<Record<string, unknown>>({
+        query: `
+          SELECT id, input, output, metadata
+          FROM traces
+          WHERE project_id = @projectId AND id IN (${placeholders}) AND is_deleted = 0
+        `,
+        params,
+      }),
+      db.query<Record<string, unknown>>({
+        query: `
+          SELECT trace_id, level, start_time, end_time, usage_details,
+                 cost_details, total_cost
+          FROM observations
+          WHERE project_id = @projectId AND trace_id IN (${placeholders}) AND is_deleted = 0
+        `,
+        params,
+      }),
+    ]);
+
+    const ioByTrace = new Map<
+      string,
+      { input: unknown; output: unknown; metadata: unknown }
+    >();
+    for (const row of traceRows) {
+      ioByTrace.set(String(row.id), {
+        input: parseJsonValue(row.input),
+        output: parseJsonValue(row.output),
+        metadata: parseJsonValue(row.metadata),
+      });
+    }
+
+    const obsByTrace = new Map<string, Array<Record<string, unknown>>>();
+    for (const row of obsRows) {
+      const tid = String(row.trace_id);
+      const list = obsByTrace.get(tid) ?? [];
+      list.push(row);
+      obsByTrace.set(tid, list);
+    }
+
+    const metrics = traceIds.map((traceId) =>
+      aggregateTraceMetrics(
+        traceId,
+        obsByTrace.get(traceId) ?? [],
+        ioByTrace.get(traceId) ?? { input: null, output: null, metadata: null },
+      ),
+    );
+
+    return c.json(metrics);
+  } catch (error) {
+    logger.error("[lite-server] traces/metrics query failed", error);
+    return c.json([], 200);
+  }
 });
 
 app.get("/api/public/traces/:traceId", authMiddleware, async (c) => {

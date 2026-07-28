@@ -3,6 +3,9 @@
  */
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { serveStatic } from "@hono/node-server/serve-static";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { BaseError, LangfuseNotFoundError } from "@langfuse/shared";
 import { logger } from "@langfuse/shared/src/server";
 import type { LiteServerEnv } from "./auth";
@@ -12,6 +15,8 @@ import otelRoutes from "./routes/otel";
 import tracesRoutes from "./routes/traces";
 import observationsRoutes from "./routes/observations";
 import scoresRoutes from "./routes/scores";
+import sessionsRoutes from "./routes/sessions";
+import dashboardRoutes from "./routes/dashboard";
 
 export function createApp(): Hono<LiteServerEnv> {
   const app = new Hono<LiteServerEnv>();
@@ -63,6 +68,28 @@ export function createApp(): Hono<LiteServerEnv> {
   app.route("/", tracesRoutes);
   app.route("/", observationsRoutes);
   app.route("/", scoresRoutes);
+  app.route("/", sessionsRoutes);
+  app.route("/", dashboardRoutes);
+
+  // Serve the lite-web SPA build (packages/lite-web/dist) when present. In
+  // development the frontend runs on its own Vite dev server, so the dist
+  // folder may not exist — in that case we skip static serving entirely.
+  // `webDist` is resolved from __dirname so it is correct regardless of the
+  // process CWD (serveStatic resolves relative roots against CWD).
+  const webDist = path.resolve(__dirname, "../../lite-web/dist");
+  if (fs.existsSync(path.join(webDist, "index.html"))) {
+    // Static assets (JS/CSS/images). Also serves `/` via directory-index
+    // resolution (webDist/index.html). Unmatched paths fall through (next()).
+    app.use("/*", serveStatic({ root: webDist }));
+    // SPA fallback: any non-API route that did not match a static file serves
+    // index.html so client-side routing works on deep links / refresh.
+    app.get("*", serveStatic({ root: webDist, path: "index.html" }));
+    logger.info(`[lite-server] Serving lite-web SPA from ${webDist}`);
+  } else {
+    logger.info(
+      "[lite-server] lite-web dist not found — API only (run the Vite dev server for the UI)",
+    );
+  }
 
   return app;
 }
