@@ -2,12 +2,20 @@
  * Session detail — lite replica of web's session detail view, rendered as a
  * single merged observation tree: every trace in the session contributes its
  * observation subtree (rooted at the trace), with a divider between turns.
- * Mirrors the trace-detail page's left-hand tree, extended across a session.
+ * Mirrors the trace-detail page's tree + detail-panel layout, extended across
+ * a whole session. Clicking a trace root collapses/expands its subtree; a
+ * dedicated button opens the standalone trace detail page.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ListTree, Users } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowUpRight,
+  ChevronRight,
+  ListTree,
+  Users,
+} from "lucide-react";
 
 import { getSession } from "@/lib/api";
 import type { SessionTrace } from "@/lib/types";
@@ -16,11 +24,14 @@ import {
   formatIntervalSeconds,
   usdFormatter,
 } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { buildTree, ObservationNode } from "@/components/observation-tree";
+import { ObservationDetail } from "@/components/observation-detail";
 import { EmptyState, ErrorState } from "@/components/state";
 
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
@@ -32,13 +43,35 @@ function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-/** Turn header: the trace that anchors each observation subtree. */
-function TraceRootRow({ trace }: { trace: SessionTrace }) {
+/**
+ * Turn header: the trace that anchors each observation subtree. Clicking the
+ * row collapses/expands the subtree; the arrow button opens the standalone
+ * trace detail page.
+ */
+function TraceRootRow({
+  trace,
+  expanded,
+  onToggle,
+}: {
+  trace: SessionTrace;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   return (
-    <Link
-      to={`/traces/${encodeURIComponent(trace.id)}`}
-      className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent/50"
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onToggle}
+      onKeyDown={(e) => e.key === "Enter" && onToggle()}
+      aria-expanded={expanded}
+      className="flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent/50"
     >
+      <ChevronRight
+        className={cn(
+          "h-3.5 w-3.5 shrink-0 transition-transform",
+          expanded && "rotate-90",
+        )}
+      />
       <ListTree className="h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400" />
       <span className="truncate font-semibold">
         {trace.name ?? "(unnamed trace)"}
@@ -46,17 +79,30 @@ function TraceRootRow({ trace }: { trace: SessionTrace }) {
       <span className="shrink-0 text-xs text-muted-foreground">
         {formatDateTime(trace.timestamp)}
       </span>
-      {trace.latency !== null && (
-        <span className="ml-auto shrink-0 pl-2 font-mono text-[11px] text-muted-foreground">
-          {formatIntervalSeconds(trace.latency)}
-        </span>
-      )}
-    </Link>
+      <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
+        {trace.latency !== null && (
+          <span className="font-mono text-[11px] text-muted-foreground">
+            {formatIntervalSeconds(trace.latency)}
+          </span>
+        )}
+        <Link
+          to={`/traces/${encodeURIComponent(trace.id)}`}
+          onClick={(e) => e.stopPropagation()}
+          title="Open trace detail"
+          aria-label="Open trace detail"
+          className="rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <ArrowUpRight className="h-3.5 w-3.5" />
+        </Link>
+      </span>
+    </div>
   );
 }
 
 export function SessionDetailPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   const query = useQuery({
     queryKey: ["session", sessionId],
@@ -70,6 +116,33 @@ export function SessionDetailPage() {
     () => (session?.traces ?? []).map((t) => buildTree(t.observations)),
     [session],
   );
+
+  // The selected observation and the trace it belongs to (for its scores).
+  const selected = useMemo(() => {
+    if (!selectedId || !session) return null;
+    for (const trace of session.traces) {
+      const observation = trace.observations.find((o) => o.id === selectedId);
+      if (observation) return { observation, trace };
+    }
+    return null;
+  }, [selectedId, session]);
+
+  const selectedScores = selected
+    ? selected.trace.scores.filter(
+        (s) => s.observationId === selected.observation.id,
+      )
+    : [];
+
+  const toggleTrace = (id: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
 
   return (
     <div className="flex h-full flex-col">
@@ -140,35 +213,67 @@ export function SessionDetailPage() {
         )}
       </div>
 
-      {/* Merged observation tree: one subtree per trace, dividers between */}
-      <div className="flex-1 overflow-auto px-6 py-4">
-        {query.isLoading ? (
-          <div className="space-y-3">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-24 w-full" />
-            ))}
-          </div>
-        ) : query.error ? (
-          <ErrorState error={query.error} />
-        ) : session && session.traces.length === 0 ? (
-          <EmptyState message="No traces in this session." />
-        ) : (
-          <Card className="p-2">
-            {session?.traces.map((trace, i) => (
-              <div key={trace.id}>
-                {i > 0 && <Separator className="my-2" />}
-                <TraceRootRow trace={trace} />
-                {(trees[i] ?? []).map((node) => (
-                  <ObservationNode
-                    key={node.observation.id}
-                    node={node}
-                    depth={1}
-                  />
+      {/* Body: merged observation tree + detail panel */}
+      <div className="flex min-h-0 flex-1">
+        <Card className="m-4 mr-0 flex w-[45%] min-w-[320px] flex-col overflow-hidden">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Observation tree</CardTitle>
+          </CardHeader>
+          <CardContent className="min-h-0 flex-1 p-2">
+            {query.isLoading ? (
+              <div className="space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-24 w-full" />
                 ))}
               </div>
-            ))}
-          </Card>
-        )}
+            ) : query.error ? (
+              <ErrorState error={query.error} />
+            ) : session && session.traces.length === 0 ? (
+              <EmptyState message="No traces in this session." />
+            ) : (
+              <ScrollArea className="h-full">
+                {session?.traces.map((trace, i) => {
+                  const isCollapsed = collapsed.has(trace.id);
+                  return (
+                    <div key={trace.id}>
+                      {i > 0 && <Separator className="my-2" />}
+                      <TraceRootRow
+                        trace={trace}
+                        expanded={!isCollapsed}
+                        onToggle={() => toggleTrace(trace.id)}
+                      />
+                      {!isCollapsed &&
+                        (trees[i] ?? []).map((node) => (
+                          <ObservationNode
+                            key={node.observation.id}
+                            node={node}
+                            depth={1}
+                            selectedId={selectedId}
+                            onSelect={setSelectedId}
+                          />
+                        ))}
+                    </div>
+                  );
+                })}
+              </ScrollArea>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="m-4 flex flex-1 flex-col overflow-hidden">
+          <CardContent className="min-h-0 flex-1 overflow-y-auto p-4 pt-6">
+            {selected ? (
+              <ObservationDetail
+                observation={selected.observation}
+                scores={selectedScores}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                Select an observation to view its details.
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

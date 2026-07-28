@@ -276,6 +276,7 @@ app.get("/api/public/sessions", authMiddleware, async (c) => {
 type SessionScoreRow = {
   id: string;
   trace_id: string;
+  observation_id: string | null;
   name: string;
   value: number | null;
   string_value: string | null;
@@ -328,7 +329,7 @@ app.get("/api/public/sessions/:sessionId", authMiddleware, async (c) => {
     }),
     db.query<SessionScoreRow>({
       query: `
-        SELECT id, trace_id, name, value, string_value, data_type, comment, source
+        SELECT id, trace_id, observation_id, name, value, string_value, data_type, comment, source
         FROM scores
         WHERE project_id = @projectId AND trace_id IN (${placeholders}) AND is_deleted = 0
         ORDER BY timestamp ASC
@@ -353,8 +354,9 @@ app.get("/api/public/sessions/:sessionId", authMiddleware, async (c) => {
   }
 
   // Full observation shapes per trace (lite mode: one SQLite query per trace)
-  // so the session view can render the merged observation tree. IO is omitted
-  // — the tree only needs structure/type/timing.
+  // so the session view can render the merged observation tree and open a
+  // per-observation detail panel. IO is included (matching the trace detail
+  // endpoint) so the panel's Input/Output/Metadata tabs are populated.
   type ApiObservation = ReturnType<typeof transformDbToApiObservation>;
   const observationsByTraceId = new Map<string, ApiObservation[]>();
   await Promise.all(
@@ -362,7 +364,7 @@ app.get("/api/public/sessions/:sessionId", authMiddleware, async (c) => {
       const obs = await getObservationsForTrace({
         traceId: tid,
         projectId,
-        includeIO: false,
+        includeIO: true,
       });
       observationsByTraceId.set(
         tid,
@@ -421,6 +423,7 @@ app.get("/api/public/sessions/:sessionId", authMiddleware, async (c) => {
       totalTokens: metrics.totalTokens,
       scores: (scoresByTrace.get(String(t.id)) ?? []).map((s) => ({
         id: s.id,
+        observationId: s.observation_id,
         name: s.name,
         value: s.value,
         stringValue: s.string_value,

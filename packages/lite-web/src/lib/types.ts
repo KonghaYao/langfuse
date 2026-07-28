@@ -242,6 +242,7 @@ export type SessionListParams = {
 
 export type SessionScore = {
   id: string;
+  observationId: string | null;
   name: string;
   value: number | null;
   stringValue: string | null;
